@@ -1,0 +1,169 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.org/appsec-review/verdict.schema.json",
+  "title": "Security review verdict",
+  "description": "Structured output contract for agent-assisted triage of a single finding.",
+  "type": "object",
+  "required": [
+    "finding_id",
+    "verdict",
+    "confidence",
+    "evidence_level",
+    "severity",
+    "reasoning",
+    "reviewer"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "finding_id": {
+      "type": "string",
+      "description": "Stable identifier from the review packet. Copy verbatim.",
+      "minLength": 1
+    },
+    "rule_id": {
+      "type": "string",
+      "description": "Originating scanner rule, when the finding came from a scanner."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["true_positive", "false_positive", "needs_human"],
+      "description": "needs_human means the evidence available was insufficient to decide."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "high is permitted only when evidence_level is 'traced'."
+    },
+    "evidence_level": {
+      "type": "string",
+      "enum": ["traced", "partial", "pattern"],
+      "description": "traced: full source-to-sink path read. partial: path incomplete. pattern: shape match only."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"]
+    },
+    "priority_class": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2"]
+    },
+    "cwe": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^CWE-[0-9]+$" },
+      "description": "One or more CWE identifiers."
+    },
+    "location": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "related_locations": {
+      "type": "array",
+      "description": "Other sites sharing the same root cause. Do not file these separately.",
+      "items": {
+        "type": "object",
+        "required": ["file"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "data_flow": {
+      "type": "array",
+      "description": "Ordered source-to-sink steps. Required when evidence_level is 'traced'.",
+      "items": {
+        "type": "object",
+        "required": ["file", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "role": {
+            "type": "string",
+            "enum": ["source", "propagator", "sanitizer", "sink"]
+          },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Why this verdict. State what was read and what was not.",
+      "minLength": 20
+    },
+    "exploit_preconditions": {
+      "type": "array",
+      "description": "Conditions that must hold for exploitation. Empty means none identified.",
+      "items": { "type": "string" }
+    },
+    "mitigating_controls": {
+      "type": "array",
+      "description": "Controls observed in code that reduce or remove impact.",
+      "items": { "type": "string" }
+    },
+    "requires_runtime_proof": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when only execution can confirm this. Blocks promotion to confirmed."
+    },
+    "blocked_by_scope": {
+      "type": "array",
+      "description": "Excluded paths that stopped the analysis, if any.",
+      "items": { "type": "string" }
+    },
+    "remediation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string" },
+        "patch": {
+          "type": ["string", "null"],
+          "description": "Unified diff, or null when no safe minimal fix is evident."
+        },
+        "breaking_change_risk": {
+          "type": "string",
+          "enum": ["none", "low", "medium", "high", "unknown"]
+        }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "required": ["agent", "reviewed_at"],
+      "additionalProperties": false,
+      "properties": {
+        "agent": { "type": "string", "description": "Tool and model identifier." },
+        "skill": { "type": "string", "description": "Skill pack or prompt file used." },
+        "session": { "type": "string" },
+        "reviewed_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "confidence": { "const": "high" } },
+        "required": ["confidence"]
+      },
+      "then": {
+        "properties": { "evidence_level": { "const": "traced" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "evidence_level": { "const": "pattern" } },
+        "required": ["evidence_level"]
+      },
+      "then": {
+        "properties": { "verdict": { "enum": ["false_positive", "needs_human"] } }
+      }
+    }
+  ]
+}

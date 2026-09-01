@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.org/appsec-review/challenge.schema.json",
+  "title": "Security review challenge",
+  "description": "Structured output contract for adversarial validation of a verdict.",
+  "type": "object",
+  "required": [
+    "finding_id",
+    "challenge_result",
+    "refutation_attempts",
+    "reasoning",
+    "validator"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "finding_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "challenge_result": {
+      "type": "string",
+      "enum": ["upheld", "refuted", "inconclusive"]
+    },
+    "refutation_attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim", "result"],
+        "additionalProperties": false,
+        "properties": {
+          "claim": { "type": "string" },
+          "method": { "type": "string" },
+          "result": {
+            "type": "string",
+            "enum": ["held", "failed", "inconclusive"]
+          },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 20
+    },
+    "validator": {
+      "type": "object",
+      "required": ["agent", "validated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "agent": { "type": "string" },
+        "session": { "type": "string" },
+        "validated_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

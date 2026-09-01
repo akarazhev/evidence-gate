@@ -1,0 +1,21 @@
+severity:
+  critical:
+    impact: Direct compromise of production secrets, authentication, or code execution.
+    sla_days: 3
+  high:
+    impact: Reachable privilege escalation, data exposure, or injection with strong exploitability.
+    sla_days: 14
+  medium:
+    impact: Reachable issue with meaningful but bounded security impact.
+    sla_days: 60
+  low:
+    impact: Limited impact, defense-in-depth, or hardening with plausible security value.
+    sla_days: 180
+  info:
+    impact: Informational context only.
+    sla_days: null
+
+priority_classes:
+  P0: Report always when evidence supports reachability.
+  P1: Report when reachability is established.
+  P2: Report only when explicitly requested.

@@ -1,0 +1,33 @@
+exclusions:
+  - pattern: "**/.env"
+    owner: appsec
+    reason: Runtime secrets
+  - pattern: "**/.env.*"
+    owner: appsec
+    reason: Runtime secrets
+  - pattern: "**/id_rsa"
+    owner: appsec
+    reason: Private key material
+  - pattern: "**/id_ed25519"
+    owner: appsec
+    reason: Private key material
+  - pattern: "**/*.pem"
+    owner: appsec
+    reason: Certificate or key material
+  - pattern: "**/*.key"
+    owner: appsec
+    reason: Key material
+  - pattern: ".git/"
+    owner: appsec
+    reason: Repository history and remotes are out of packet scope
+  - pattern: "findings/packets/"
+    owner: appsec
+    reason: Review packets may contain source excerpts
+
+scan_noise:
+  - "node_modules/"
+  - ".venv/"
+  - "vendor/"
+  - "dist/"
+  - "build/"
+  - "coverage/"
