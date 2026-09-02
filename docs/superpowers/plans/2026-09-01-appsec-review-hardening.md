@@ -484,6 +484,7 @@ def build_triage_packet(
           "ruleId": "python.django.security.injection.sql",
           "level": "warning",
           "message": { "text": "SQL injection" },
+          "partialFingerprints": { "semgrep.fingerprint": "abc123def456" },
           "locations": [
             {
               "physicalLocation": {
@@ -1138,6 +1139,10 @@ class TestSarifAccumulation(unittest.TestCase):
         with temp_tree({"reviewed.sarif": "{ this is not json"}) as root:
             with self.assertRaises(record_verdict.ValidationError):
                 record_verdict.load_existing_results(root / "reviewed.sarif")
+
+    # The CLI-level test for --fresh lives in Task 12's TestFreshFlag: the
+    # recorder's required arguments only settle there, and a CLI test written
+    # here would need rewriting one task later.
 
     def test_round_trip_through_document(self):
         doc = record_verdict.sarif_document([self.result_for("F-1")])
@@ -1823,7 +1828,45 @@ def compute_finding_id(
     return _digest(f"{rule_id}:{path}:{snippet}:{index}")
 ```
 
-- [ ] **Step 4: Переставить порядок в `build_triage_packet`**
+- [ ] **Step 4: Донести фингерпринты до потребителя**
+
+`load_sarif_results` собирает собственный словарь и до сих пор отбрасывал оба
+поля с фингерпринтами, поэтому предпочтительный источник идентичности не мог
+сработать ни разу на реальном входе. Добавить в словарь, который собирает
+`load_sarif_results` (`scripts/build_packet.py:59-75`), два ключа перед
+`"code_flows"`:
+
+```python
+                    # Verbatim SARIF spelling: these are passed straight to
+                    # scanner_fingerprint, and renaming them here would add a
+                    # mapping layer whose only job is to be kept in sync.
+                    "fingerprints": result.get("fingerprints") or {},
+                    "partialFingerprints": result.get("partialFingerprints") or {},
+```
+
+И дописать в `TestFindingIdentity` два теста, закрывающих именно этот разрыв:
+
+```python
+    def test_fingerprints_survive_sarif_parsing(self):
+        results = build_packet.load_sarif_results(SARIF)
+        self.assertEqual(
+            results[1]["partialFingerprints"],
+            {"semgrep.fingerprint": "abc123def456"},
+        )
+
+    def test_real_sarif_input_uses_the_scanner_fingerprint(self):
+        # An empty repository: the content path would raise FileNotFoundError,
+        # so a returned id proves the fingerprint path actually ran on input
+        # that came through load_sarif_results rather than a hand-built dict.
+        results = build_packet.load_sarif_results(SARIF)
+        with temp_tree({}) as repo:
+            fid = build_packet.compute_finding_id(
+                results[1], repo, fixture_exclusions()
+            )
+        self.assertTrue(fid.startswith("F-"))
+```
+
+- [ ] **Step 5: Переставить порядок в `build_triage_packet`**
 
 Идентичность теперь читает файл, поэтому scope-check обязан идти раньше её вычисления. Заменить начало функции:
 
@@ -1853,7 +1896,7 @@ def build_triage_packet(
         "id_scheme": ID_SCHEME,
 ```
 
-- [ ] **Step 5: Поправить список находок**
+- [ ] **Step 6: Поправить список находок**
 
 В `main` список больше не может считать id для исключённых путей — это означало бы чтение запрещённого файла. Заменить блок `if args.list or args.index is None:`:
 
@@ -1887,17 +1930,17 @@ def _in_scope(path: str, exclusions: list[dict] | None = None) -> bool:
         return False
 ```
 
-- [ ] **Step 6: Прогнать**
+- [ ] **Step 7: Прогнать**
 
 Run: `make test`
 Expected: всё зелёное.
 
-- [ ] **Step 7: Проверить вручную**
+- [ ] **Step 8: Проверить вручную**
 
 Run: `python3 scripts/build_packet.py --sarif tests/fixtures/sample.sarif --list`
-Expected: три находки; `secrets/prod.env` помечена `[OUT OF SCOPE]` и без id; для двух остальных id не печатается, потому что файлов нет в рабочем каталоге — это ожидаемо, они показаны как `(no id)`.
+Expected: три находки, по одной на каждый путь идентичности. `app/db.py` несёт фингерпринт и получает id, не читая файла. `app/handler.py` идёт по содержимому, файла в рабочем каталоге нет, поэтому `(no id)`. `secrets/prod.env` помечена `[OUT OF SCOPE]` и тоже без id.
 
-- [ ] **Step 8: Коммит**
+- [ ] **Step 9: Коммит**
 
 ```bash
 git add scripts/build_packet.py tests/test_build_packet.py
@@ -1984,6 +2027,35 @@ class TestIndependenceControl(unittest.TestCase):
             )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("--validator", proc.stderr)
+
+    def test_fresh_discards_the_existing_sarif(self):
+        # Deferred from Task 8: --fresh is only observable through the CLI, and
+        # the recorder's argument set settles in this task.
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            sarif = root / "reviewed.sarif"
+            stale = record_verdict.build_result(
+                make_verdict(finding_id="F-stale"), None, "confirmed", "old"
+            )
+            sarif.write_text(
+                json.dumps(record_verdict.sarif_document([stale])), encoding="utf-8"
+            )
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--sarif-out", str(sarif),
+                    "--log", str(root / "triage-log.csv"),
+                    "--fresh",
+                ],
+                root,
+            )
+            ids = [
+                r["properties"]["finding_id"]
+                for r in record_verdict.load_existing_results(sarif)
+            ]
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("F-stale", ids)
 
     def test_distinct_models_are_accepted(self):
         with temp_tree({"placeholder": ""}) as root:
@@ -3261,17 +3333,11 @@ def append_decision(path: Path, row: dict) -> None:
         writer.writerow({k: row.get(k, "") for k in LOG_FIELDS})
 
 
-def update_sarif(path: Path, finding_id: str, properties: dict) -> bool:
-    """Fold the decision into the current-state view. Returns False if absent."""
-    results = load_existing_results(path)
+def find_sarif_result(results: list[dict], finding_id: str) -> dict | None:
     for result in results:
         if result.get("properties", {}).get("finding_id") == finding_id:
-            result["properties"].update(properties)
-            break
-    else:
-        return False
-    path.write_text(json.dumps(sarif_document(results), indent=2), encoding="utf-8")
-    return True
+            return result
+    return None
 
 
 def main() -> int:
@@ -3296,6 +3362,16 @@ def main() -> int:
               "would sit in the log describing nothing.", file=sys.stderr)
         return 2
 
+    # Parse the SARIF before writing anything. The triage log is append-only,
+    # so a row written before a SARIF failure could never be taken back and the
+    # two artefacts would disagree permanently.
+    try:
+        results = load_existing_results(args.sarif)
+    except ValidationError as exc:
+        print(f"SARIF ERROR: {exc}", file=sys.stderr)
+        return 1
+    target = find_sarif_result(results, args.finding_id)
+
     decided_at = datetime.now(timezone.utc).isoformat()
     append_decision(
         args.log,
@@ -3316,24 +3392,22 @@ def main() -> int:
         },
     )
 
-    try:
-        updated = update_sarif(
-            args.sarif,
-            args.finding_id,
+    if target is not None:
+        target["properties"].update(
             {
                 "human_decision": args.decision,
                 "human_decision_at": decided_at,
                 "human_decision_by": args.by,
                 "human_rationale": args.rationale,
-            },
+            }
         )
-    except ValidationError as exc:
-        print(f"SARIF ERROR: {exc}", file=sys.stderr)
-        return 1
+        args.sarif.write_text(
+            json.dumps(sarif_document(results), indent=2), encoding="utf-8"
+        )
 
     print(f"{args.finding_id}: {args.decision} by {args.by}")
     print(f"  logged -> {args.log}")
-    if updated:
+    if target is not None:
         print(f"  sarif  -> {args.sarif}")
     else:
         print(f"  note: {args.finding_id} is not in {args.sarif}; log updated only")
@@ -3414,6 +3488,14 @@ class TestCollapse(unittest.TestCase):
         self.assertEqual(collapsed[0]["final_state"], "confirmed")
         self.assertEqual(collapsed[0]["human_decision"], "rejected")
 
+    def test_latest_wins_regardless_of_input_order(self):
+        newer = row(final_state="dismissed", reviewed_at="2026-09-02T10:00:00+00:00",
+                    supersedes="2026-09-01T10:00:00+00:00")
+        older = row(final_state="confirmed")
+        collapsed = metrics.collapse([newer, older])
+        self.assertEqual(len(collapsed), 1)
+        self.assertEqual(collapsed[0]["final_state"], "dismissed")
+
     def test_revisions_are_counted(self):
         rows = [
             row(),
@@ -3482,7 +3564,11 @@ def collapse(rows: list[dict]) -> list[dict]:
     an earlier verdict row without erasing it.
     """
     by_id: dict[str, dict] = {}
-    for row in rows:
+    # Fold in timestamp order, not input order. The log is normally
+    # chronological, but --since filtering and hand edits can reorder it, and
+    # letting input order decide would silently promote a superseded verdict
+    # over the one that replaced it.
+    for row in sorted(rows, key=lambda r: r.get("reviewed_at", "")):
         fid = row.get("finding_id")
         if not fid:
             continue
@@ -3591,7 +3677,7 @@ git commit -m "feat: collapse rows into findings and report agent accuracy"
 ### Task 20: Привести документацию в соответствие
 
 **Files:**
-- Modify: `README.md`, `docs/04-procedures.md`, `docs/07-graduation.md`, `CLAUDE.md`, `Makefile`
+- Modify: `README.md`, `docs/03-data-handling.md`, `docs/04-procedures.md`, `docs/07-graduation.md`, `CLAUDE.md`, `Makefile`
 - Modify: `templates/verdict.schema.json`, `templates/challenge.schema.json`, `prompts/adversarial-validate.md`
 - Create: `templates/threat-model.md`
 
