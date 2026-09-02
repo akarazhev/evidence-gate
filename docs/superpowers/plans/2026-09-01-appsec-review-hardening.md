@@ -2691,7 +2691,7 @@ from check_scope import (  # noqa: E402
 Заменить блок листинга целиком:
 
 ```python
-    if args.list or (args.index is None and not args.finding_id):
+    if args.list or args.index is None:
         exclusions, _ = load_policy()
         items = annotate(results, args.repo, exclusions)
         shown = apply_filters(
@@ -2808,6 +2808,13 @@ Expected: FAIL — аргумент неизвестен.
                         help="Address a finding by id; survives filter changes")
 ```
 
+Расширить условие листинга — до этой задачи оно не знало про id, и без правки
+`--finding-id` без `--index` провалился бы в печать списка:
+
+```python
+    if args.list or (args.index is None and not args.finding_id):
+```
+
 Сразу после `args = parser.parse_args()`:
 
 ```python
@@ -2892,8 +2899,8 @@ git commit -m "feat: address findings by id so filters cannot change what N mean
 - [ ] **Step 1: Написать падающий тест**
 
 ```python
-class TestSupersede(unittest.TestCase):
-    def test_duplicate_without_flag_is_refused(self):
+class TestVerdictRows(unittest.TestCase):
+    def test_verdict_rows_are_found(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
             write_log(log, [{
@@ -2906,6 +2913,8 @@ class TestSupersede(unittest.TestCase):
         self.assertEqual(len(rows), 1)
 
     def test_rows_without_a_verdict_are_not_counted(self):
+        # Human-decision rows share the finding_id but decide on a verdict
+        # rather than being one, so superseding must not see them.
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
             write_log(log, [{
@@ -2919,6 +2928,67 @@ class TestSupersede(unittest.TestCase):
             self.assertEqual(
                 record_verdict.verdict_rows(root / "absent.csv", "F-1"), []
             )
+
+
+class TestSupersedeCli(unittest.TestCase):
+    """Re-recording must be a deliberate act. The log is append-only, so a
+    silent second row would let metrics count one finding as two."""
+
+    def write_verdict(self, root, **overrides):
+        verdict = make_verdict(severity="low", evidence_level="partial", **overrides)
+        (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+
+    def run_recorder(self, root, extra=()):
+        return subprocess.run(
+            [
+                sys.executable, str(REPO_ROOT / "scripts" / "record_verdict.py"),
+                "--verdict", str(root / "verdict.json"),
+                "--agent", "model-a",
+                "--log", str(root / "triage-log.csv"),
+                "--sarif-out", str(root / "reviewed.sarif"),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_first_recording_succeeds(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            proc = self.run_recorder(root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_second_recording_without_the_flag_is_refused(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            self.assertEqual(self.run_recorder(root).returncode, 0)
+            proc = self.run_recorder(root)
+            rows = record_verdict.verdict_rows(
+                root / "triage-log.csv", "F-000000000001"
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--supersede", proc.stderr)
+        self.assertEqual(len(rows), 1, "a refused run must not append")
+
+    def test_supersede_appends_and_points_back(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            self.assertEqual(self.run_recorder(root).returncode, 0)
+
+            revised = make_verdict(
+                severity="low", evidence_level="partial", verdict="false_positive"
+            )
+            revised["reviewer"]["reviewed_at"] = "2026-09-02T10:00:00+00:00"
+            (root / "verdict.json").write_text(json.dumps(revised), encoding="utf-8")
+
+            proc = self.run_recorder(root, ["--supersede"])
+            rows = record_verdict.verdict_rows(
+                root / "triage-log.csv", "F-000000000001"
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["supersedes"], "2026-09-01T10:00:00+00:00")
+        self.assertEqual(rows[1]["initial_verdict"], "false_positive")
 ```
 
 - [ ] **Step 2: Реализовать**
