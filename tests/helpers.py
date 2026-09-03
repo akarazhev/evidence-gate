@@ -48,4 +48,21 @@ def temp_tree(files: dict[str, str]):
         yield root
 
 
-__all__ = ["REPO_ROOT", "FIXTURES", "fixture_exclusions", "fixture_scan_noise", "temp_tree"]
+def write_log(path: Path, rows: list[dict]) -> None:
+    """Write a triage log using whatever columns record_verdict declares today.
+
+    Reading LOG_FIELDS from the module rather than hardcoding it here means
+    later tasks can add columns without breaking every metrics test.
+    """
+    import csv
+
+    import record_verdict
+
+    with Path(path).open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=record_verdict.LOG_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k, "") for k in record_verdict.LOG_FIELDS})
+
+
+__all__ = ["REPO_ROOT", "FIXTURES", "fixture_exclusions", "fixture_scan_noise", "temp_tree", "write_log"]
