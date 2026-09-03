@@ -244,10 +244,10 @@ def decide_state(verdict: dict, challenge: dict | None) -> tuple[str, str]:
     return ("human_review", "verdict was needs_human")
 
 
-def append_log(row: dict) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    exists = LOG_PATH.exists()
-    with LOG_PATH.open("a", newline="", encoding="utf-8") as fh:
+def append_log(row: dict, path: Path = LOG_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
         if not exists:
             writer.writeheader()
@@ -365,6 +365,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verdict", type=Path, required=True)
     parser.add_argument("--challenge", type=Path)
+    parser.add_argument("--agent", required=True,
+                        help="Model identifier for the triage pass, supplied by the engineer")
+    parser.add_argument("--validator",
+                        help="Model identifier for the validation pass; required with --challenge")
+    parser.add_argument("--log", type=Path, default=LOG_PATH,
+                        help="Triage log to append to")
     parser.add_argument("--minutes", type=float, help="Engineer time spent, for metrics")
     parser.add_argument("--notes", default="")
     parser.add_argument("--sarif-out", type=Path, default=SARIF_OUT)
@@ -373,6 +379,21 @@ def main() -> int:
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero unless the finding reaches a terminal state")
     args = parser.parse_args()
+
+    if args.challenge and not args.validator:
+        parser.error("--validator is required when --challenge is given")
+
+    if args.validator and args.agent == args.validator:
+        print("REFUSED: triage and validation ran on the same model.\n", file=sys.stderr)
+        print(f"  agent:     {args.agent}", file=sys.stderr)
+        print(f"  validator: {args.validator}\n", file=sys.stderr)
+        print(
+            "Independence is the mechanism, not a preference. A second pass on the\n"
+            "same model inherits the same blind spots and produces agreement rather\n"
+            "than validation. Nothing was written.",
+            file=sys.stderr,
+        )
+        return 2
 
     verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
     challenge = (
@@ -403,14 +424,24 @@ def main() -> int:
         print("ERROR: challenge finding_id does not match the verdict.", file=sys.stderr)
         return 1
 
+    # The model fills reviewer.agent in its own output, and models are
+    # unreliable about their own identity. The engineer's value is authoritative;
+    # a mismatch is worth surfacing but is not grounds to refuse.
+    self_reported = verdict.get("reviewer", {}).get("agent", "")
+    if self_reported and self_reported != args.agent:
+        print(
+            f"WARNING: verdict self-reports agent {self_reported!r}, engineer "
+            f"supplied {args.agent!r}.\n",
+            file=sys.stderr,
+        )
     if challenge:
-        v_agent = verdict.get("reviewer", {}).get("agent", "")
-        c_agent = challenge.get("validator", {}).get("agent", "")
-        if v_agent and v_agent == c_agent:
-            print(f"WARNING: triage and validation both ran on {v_agent}.",
-                  file=sys.stderr)
-            print("         Independence is the point of the second pass; the "
-                  "result is weaker than it looks.\n", file=sys.stderr)
+        validator_self = challenge.get("validator", {}).get("agent", "")
+        if validator_self and validator_self != args.validator:
+            print(
+                f"WARNING: challenge self-reports validator {validator_self!r}, "
+                f"engineer supplied {args.validator!r}.\n",
+                file=sys.stderr,
+            )
         if challenge.get("challenge_result") == "upheld" and not challenge.get(
             "refutation_attempts"
         ):
@@ -450,7 +481,8 @@ def main() -> int:
             "agent": verdict.get("reviewer", {}).get("agent", ""),
             "validator": (challenge or {}).get("validator", {}).get("agent", ""),
             "notes": args.notes,
-        }
+        },
+        args.log,
     )
 
     results = merge_result(existing, build_result(verdict, challenge, state, rationale))
@@ -459,7 +491,7 @@ def main() -> int:
 
     print(f"{verdict['finding_id']}: {state}")
     print(f"  {rationale}")
-    print(f"  logged  -> {LOG_PATH}")
+    print(f"  logged  -> {args.log}")
     print(f"  sarif   -> {args.sarif_out}")
 
     if state == "blocked_needs_challenge":

@@ -6,9 +6,12 @@ is a defect of the same kind this whole workflow exists to catch.
 """
 
 import json
+import subprocess
+import sys
 import unittest
 
 import record_verdict
+from tests import REPO_ROOT
 from tests.helpers import temp_tree
 
 
@@ -218,6 +221,152 @@ class TestSarifAccumulation(unittest.TestCase):
             path = root / "reviewed.sarif"
             path.write_text(json.dumps(doc), encoding="utf-8")
             self.assertEqual(len(record_verdict.load_existing_results(path)), 1)
+
+
+class TestIndependenceControl(unittest.TestCase):
+    """docs/04 calls independence the mechanism. A warning is not a mechanism."""
+
+    def run_recorder(self, args, cwd):
+        return subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "record_verdict.py"), *args],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+        )
+
+    def setup_files(self, root):
+        verdict = make_verdict(severity="low", evidence_level="partial")
+        challenge = make_challenge("upheld")
+        (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+        (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
+
+    def test_same_model_is_refused_and_writes_nothing(self):
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--challenge", str(root / "challenge.json"),
+                    "--agent", "model-a",
+                    "--validator", "model-a",
+                    "--sarif-out", str(sarif),
+                    "--log", str(log),
+                ],
+                root,
+            )
+            # Absence is asserted INSIDE the block. temp_tree deletes the whole
+            # tree on exit, so exists() afterwards is False no matter what the
+            # process did, and the assertion could never fail.
+            self.assertFalse(log.exists(), "a refused run must not write the log")
+            self.assertFalse(sarif.exists(), "a refused run must not write SARIF")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("REFUSED", proc.stderr)
+
+    def test_missing_agent_is_refused(self):
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            proc = self.run_recorder(["--verdict", str(root / "verdict.json")], root)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--agent", proc.stderr)
+
+    def test_challenge_without_validator_is_refused(self):
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--challenge", str(root / "challenge.json"),
+                    "--agent", "model-a",
+                ],
+                root,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--validator", proc.stderr)
+
+    def test_fresh_discards_the_existing_sarif(self):
+        # Deferred from Task 8: --fresh is only observable through the CLI, and
+        # the recorder's argument set settles in this task.
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            sarif = root / "reviewed.sarif"
+            stale = record_verdict.build_result(
+                make_verdict(finding_id="F-stale"), None, "confirmed", "old"
+            )
+            sarif.write_text(
+                json.dumps(record_verdict.sarif_document([stale])), encoding="utf-8"
+            )
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--sarif-out", str(sarif),
+                    "--log", str(root / "triage-log.csv"),
+                    "--fresh",
+                ],
+                root,
+            )
+            ids = [
+                r["properties"]["finding_id"]
+                for r in record_verdict.load_existing_results(sarif)
+            ]
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("F-stale", ids)
+
+    def test_single_model_run_without_challenge_is_accepted(self):
+        # severity=low needs no challenge, so one model is legitimate here.
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--sarif-out", str(root / "reviewed.sarif"),
+                    "--log", str(root / "triage-log.csv"),
+                ],
+                root,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_malformed_sarif_refuses_before_touching_the_log(self):
+        # Deferred from Task 8 alongside the --fresh test. Regression for the
+        # ordering requirement: the log is append-only, so a row written ahead
+        # of a SARIF failure could never be withdrawn.
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            sarif.write_text("{ not json", encoding="utf-8")
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--sarif-out", str(sarif),
+                    "--log", str(log),
+                ],
+                root,
+            )
+            # Inside the block: see the note in test_same_model_is_refused.
+            self.assertFalse(log.exists(), "a refused run must not create the log")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("SARIF ERROR", proc.stderr)
+
+    def test_distinct_models_are_accepted(self):
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--challenge", str(root / "challenge.json"),
+                    "--agent", "model-a",
+                    "--validator", "model-b",
+                    "--sarif-out", str(root / "reviewed.sarif"),
+                    "--log", str(root / "triage-log.csv"),
+                ],
+                root,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 class TestFallbackValidator(unittest.TestCase):

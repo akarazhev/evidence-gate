@@ -38,6 +38,12 @@ def temp_tree(files: dict[str, str]):
 
     Keys are repository-relative paths, values are file contents. Parent
     directories are created automatically.
+
+    The tree is deleted when the block exits. Assert the ABSENCE of a file
+    inside the block, never after it: `assertFalse(p.exists())` on the outside
+    passes whether or not the code under test wrote the file, which turns a
+    no-partial-write control into a test that cannot fail. Capturing a value
+    inside and asserting on it outside is fine.
     """
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)

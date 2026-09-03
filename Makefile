@@ -14,7 +14,7 @@ help:
 	@echo "  make list                 list findings with scope status"
 	@echo "  make triage N=3           build a review packet for finding 3"
 	@echo "  make validate ID=F-abc    build the adversarial challenge packet"
-	@echo "  make record ID=F-abc MINUTES=12   validate, apply policy, log"
+	@echo "  make record ID=F-abc AGENT=<model> VALIDATOR=<model> MINUTES=12"
 	@echo "  make metrics              programme health"
 	@echo "  make goldenset            regression bench"
 	@echo "  make import ENGAGEMENT=42 upload to DefectDojo"
@@ -42,8 +42,11 @@ validate:
 
 record:
 	@test -n "$(ID)" || (echo "Set ID=<finding-id>" && exit 1)
+	@test -n "$(AGENT)" || (echo "Set AGENT=<model that ran triage>" && exit 1)
 	@python3 scripts/record_verdict.py \
 		--verdict findings/verdicts/$(ID).json \
+		--agent "$(AGENT)" \
+		$(if $(VALIDATOR),--validator "$(VALIDATOR)",) \
 		$(if $(wildcard findings/challenges/$(ID).json),--challenge findings/challenges/$(ID).json,) \
 		$(if $(MINUTES),--minutes $(MINUTES),)
 

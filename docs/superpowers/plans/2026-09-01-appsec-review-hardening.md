@@ -146,6 +146,12 @@ def temp_tree(files: dict[str, str]):
 
     Keys are repository-relative paths, values are file contents. Parent
     directories are created automatically.
+
+    The tree is deleted when the block exits. Assert the ABSENCE of a file
+    inside the block, never after it: `assertFalse(p.exists())` on the outside
+    passes whether or not the code under test wrote the file, which turns a
+    no-partial-write control into a test that cannot fail. Capturing a value
+    inside and asserting on it outside is fine.
     """
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -2013,6 +2019,8 @@ git commit -m "fix: derive finding identity from content so it survives line shi
 - Modify: `scripts/record_verdict.py:272-330`
 - Modify: `Makefile`
 - Modify: `tests/test_record_verdict.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `record_verdict.main`.
@@ -2056,10 +2064,13 @@ class TestIndependenceControl(unittest.TestCase):
                 ],
                 root,
             )
+            # Absence is asserted INSIDE the block. temp_tree deletes the whole
+            # tree on exit, so exists() afterwards is False no matter what the
+            # process did, and the assertion could never fail.
+            self.assertFalse(log.exists(), "a refused run must not write the log")
+            self.assertFalse(sarif.exists(), "a refused run must not write SARIF")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("REFUSED", proc.stderr)
-        self.assertFalse(log.exists(), "a refused run must not write the log")
-        self.assertFalse(sarif.exists(), "a refused run must not write SARIF")
 
     def test_missing_agent_is_refused(self):
         with temp_tree({"placeholder": ""}) as root:
@@ -2144,9 +2155,10 @@ class TestIndependenceControl(unittest.TestCase):
                 ],
                 root,
             )
+            # Inside the block: see the note in test_same_model_is_refused.
+            self.assertFalse(log.exists(), "a refused run must not create the log")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("SARIF ERROR", proc.stderr)
-        self.assertFalse(log.exists(), "a refused run must not create the log")
 
     def test_distinct_models_are_accepted(self):
         with temp_tree({"placeholder": ""}) as root:
