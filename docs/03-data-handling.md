@@ -14,6 +14,27 @@ with credentials.
 That single channel is what makes this mode auditable. Everything below exists to
 keep it single.
 
+## The scanner is also a channel
+
+`semgrep --config auto`, the previous default, fetched rules from the Semgrep
+registry and reported telemetry on every run. That was a second path out of the
+perimeter, undocumented and not covered by `check_scope.py`.
+
+The default is now a local rule directory, `rules/`, and telemetry is disabled
+unconditionally. `scan.sh` refuses to run against an empty `rules/` rather than
+silently falling back to the network.
+
+Reaching the registry is still supported and sometimes correct, but it is
+explicit:
+
+```bash
+SEMGREP_CONFIG=p/security-audit make scan REPO=../myapp
+```
+
+That prints a banner naming the egress before it happens. What leaves the
+perimeter on that path is the rule request itself, not your source; the source
+still leaves only in a review packet.
+
 ## What a packet contains
 
 | Included | Not included |

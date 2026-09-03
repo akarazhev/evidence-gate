@@ -117,3 +117,14 @@
 - Why: Task 11's manual listing command uses the live policy, not the fixture
   policy. The `.pem` path is excluded under both, preserving fixture
   independence while making the manual scope-control verification meaningful.
+
+## Task 14 file list
+
+- Before: Task 14 listed only `scripts/scan.sh`, `rules/README.md`,
+  `tests/test_scan_sh.py`, and `docs/03-data-handling.md` under `Files`.
+- After: The list also names the required red-test evidence file and the
+  plan-fixes evidence file.
+- Why: The execution brief requires both artifacts in this task commit. This
+  is an unambiguous local completeness correction and does not change the
+  task's offline-default, refusal ordering, partial-write, scope, or egress
+  behavior.

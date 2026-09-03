@@ -2522,6 +2522,8 @@ git commit -m "feat: record authoritative and self-reported model ids; guard log
 - Create: `rules/README.md`
 - Create: `tests/test_scan_sh.py`
 - Modify: `docs/03-data-handling.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: ничего.
