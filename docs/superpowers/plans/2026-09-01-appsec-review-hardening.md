@@ -2850,6 +2850,33 @@ class TestTriageQueue(unittest.TestCase):
             self.assertIn("in_scope", item)
             self.assertIn("level", item)
             self.assertIn("rule_id", item)
+
+    def test_empty_sarif_list_json_is_an_empty_array(self):
+        with temp_tree({"empty.sarif": '{"version": "2.1.0", "runs": []}'}) as root:
+            sarif = root / "empty.sarif"
+            proc = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "scripts" / "build_packet.py"),
+                 "--sarif", str(sarif), "--list", "--json"],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout), [])
+
+    def test_negative_limit_refuses_and_zero_is_empty(self):
+        self.assertEqual(build_packet.apply_filters(self.items(), limit=0), [])
+        with self.assertRaisesRegex(ValueError, r"--limit must not be negative, got -1"):
+            build_packet.apply_filters(self.items(), limit=-1)
+
+    def test_empty_sarif_selection_refuses_with_scan_guidance(self):
+        with temp_tree({"empty.sarif": '{"version": "2.1.0", "runs": []}'}) as root:
+            sarif = root / "empty.sarif"
+            proc = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "scripts" / "build_packet.py"),
+                 "--sarif", str(sarif), "--index", "0"],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stderr, f"No findings in {sarif}. Run `make scan` first.\n")
 ```
 
 - [ ] **Step 3: Прогнать**
@@ -2918,6 +2945,10 @@ def apply_filters(
         key=lambda i: (LEVEL_ORDER.get(i["level"].lower(), 9), i["file"], i["start_line"])
     )
     if limit is not None:
+        # A negative limit would slice from the end and silently return a
+        # different set than asked for. Refuse rather than guess.
+        if limit < 0:
+            raise ValueError(f"--limit must not be negative, got {limit}")
         out = out[:limit]
     return out
 ```
@@ -2951,6 +2982,28 @@ from check_scope import (  # noqa: E402
                         help="Where recorded verdicts live, for --unreviewed")
 ```
 
+Сначала убрать ранний возврат, который перехватывает `--json`. Существующий блок
+
+```python
+    results = load_sarif_results(args.sarif)
+    if not results:
+        print("No findings in SARIF.")
+        return 0
+```
+
+печатает человеческий текст раньше, чем ветка листинга успевает решить, что вывод
+машинный, поэтому `--list --json` на пустом SARIF отдаёт не разбираемую строку
+вместо `[]`. Заменить на
+
+```python
+    results = load_sarif_results(args.sarif)
+```
+
+Пустой список дальше обрабатывается сам собой: `annotate` и `apply_filters`
+вернут пустое, `--json` напечатает `[]`, человеческий вывод — нули в сводке.
+Сообщение остаётся нужным только для выбора конкретной находки, поэтому
+переезжает в ветку выбора (шаг ниже).
+
 Заменить блок листинга целиком:
 
 ```python
@@ -2973,17 +3026,23 @@ from check_scope import (  # noqa: E402
         # "already reviewed" must be a subset of what this SARIF contains.
         # Counting every file in the verdict directory would fold in findings
         # from other scans and report a number nobody can reconcile.
-        on_disk = reviewed_finding_ids(args.verdicts)
-        present = {i["finding_id"] for i in items if i["finding_id"]}
-        reviewed = len(present & on_disk)
-        print(f"{len(results)} finding(s) in SARIF, {reviewed} already reviewed, "
-              f"{len(shown)} shown\n")
         for i, item in enumerate(shown):
             flag = "" if item["in_scope"] else "  [OUT OF SCOPE]"
             label = item["finding_id"] or "(no id)"
             print(f"  [{i:>3}] {label}  {item['level']:<8} "
                   f"{item['file']}:{item['start_line']}{flag}")
             print(f"        {item['rule_id']}")
+
+        # Footer, not header: on a real repository the list is hundreds of
+        # lines, and a header scrolls away before the reader reaches the end.
+        # "already reviewed" is the intersection with this SARIF - counting
+        # every file in the verdict directory would fold in findings from other
+        # scans and report a number nobody can reconcile.
+        on_disk = reviewed_finding_ids(args.verdicts)
+        present = {i["finding_id"] for i in items if i["finding_id"]}
+        reviewed = len(present & on_disk)
+        print(f"\n{len(results)} finding(s) in SARIF, {reviewed} already "
+              f"reviewed, {len(shown)} shown")
         print("\nIndices are positions in this filtered list and change when the")
         print("filters change. Use the id for anything you want to reproduce:")
         print("  make triage ID=<finding-id>   or   make triage N=<index>")
@@ -3003,6 +3062,10 @@ from check_scope import (  # noqa: E402
         reviewed_ids=reviewed_finding_ids(args.verdicts) if args.unreviewed else None,
         limit=args.limit,
     )
+
+    if not results:
+        print(f"No findings in {args.sarif}. Run `make scan` first.", file=sys.stderr)
+        return 1
 
     if not 0 <= args.index < len(shown):
         print(f"Index out of range (0..{len(shown) - 1})", file=sys.stderr)
@@ -3090,7 +3153,9 @@ Expected: FAIL — аргумент неизвестен.
         parser.error("pass either --finding-id or --index, not both")
 ```
 
-В блоке выбора, перед индексацией:
+Task 15 already refuses an empty queue before index access. Preserve that
+guard before adding id resolution; Task 16 must not move or replace it.
+The remaining selection logic is:
 
 ```python
     if args.finding_id:

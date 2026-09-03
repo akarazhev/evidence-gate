@@ -367,6 +367,10 @@ def apply_filters(
         )
     )
     if limit is not None:
+        # A negative limit would slice from the end and silently return a
+        # different set than asked for. Refuse rather than guess.
+        if limit < 0:
+            raise ValueError(f"--limit must not be negative, got {limit}")
         out = out[:limit]
     return out
 
@@ -417,9 +421,6 @@ def main() -> int:
         return 1
 
     results = load_sarif_results(args.sarif)
-    if not results:
-        print("No findings in SARIF.")
-        return 0
 
     if args.list or args.index is None:
         exclusions, _ = load_policy()
@@ -437,20 +438,23 @@ def main() -> int:
             print(json.dumps(shown, indent=2))
             return 0
 
-        # "already reviewed" must be a subset of what this SARIF contains.
-        # Counting every file in the verdict directory would fold in findings
-        # from other scans and report a number nobody can reconcile.
-        on_disk = reviewed_finding_ids(args.verdicts)
-        present = {item["finding_id"] for item in items if item["finding_id"]}
-        reviewed = len(present & on_disk)
-        print(f"{len(results)} finding(s) in SARIF, {reviewed} already reviewed, "
-              f"{len(shown)} shown\n")
         for i, item in enumerate(shown):
             flag = "" if item["in_scope"] else "  [OUT OF SCOPE]"
             label = item["finding_id"] or "(no id)"
             print(f"  [{i:>3}] {label}  {item['level']:<8} "
                   f"{item['file']}:{item['start_line']}{flag}")
             print(f"        {item['rule_id']}")
+
+        # Footer, not header: on a real repository the list is hundreds of
+        # lines, and a header scrolls away before the reader reaches the end.
+        # "already reviewed" is the intersection with this SARIF - counting
+        # every file in the verdict directory would fold in findings from other
+        # scans and report a number nobody can reconcile.
+        on_disk = reviewed_finding_ids(args.verdicts)
+        present = {item["finding_id"] for item in items if item["finding_id"]}
+        reviewed = len(present & on_disk)
+        print(f"\n{len(results)} finding(s) in SARIF, {reviewed} already "
+              f"reviewed, {len(shown)} shown")
         print("\nIndices are positions in this filtered list and change when the")
         print("filters change. Use the id for anything you want to reproduce:")
         print("  make triage ID=<finding-id>   or   make triage N=<index>")
@@ -466,6 +470,10 @@ def main() -> int:
         reviewed_ids=reviewed_finding_ids(args.verdicts) if args.unreviewed else None,
         limit=args.limit,
     )
+
+    if not results:
+        print(f"No findings in {args.sarif}. Run `make scan` first.", file=sys.stderr)
+        return 1
 
     if not 0 <= args.index < len(shown):
         print(f"Index out of range (0..{len(shown) - 1})", file=sys.stderr)

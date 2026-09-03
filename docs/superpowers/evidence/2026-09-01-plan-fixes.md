@@ -153,3 +153,18 @@
   backfill to Task 15. Both changes are unambiguous documentation completeness
   corrections and do not affect queue behavior, scope, identity, independence,
   partial-write guarantees, or egress.
+
+## Task 15 correction found in review
+
+- Before: Task 15 accepted negative limits through Python slicing, returned
+  human text before an empty JSON listing could be serialized, placed the
+  human summary before list rows, and lacked regression tests for those cases.
+  The empty-selection guard was described only as a new Task 16 behavior even
+  though it is needed for Task 15's existing index interface.
+- After: Task 15 refuses a negative limit while preserving zero, lets empty
+  listings reach the JSON and human-list branches, prints the human summary as
+  a footer, tests all three cases, and owns the empty-selection guard. Task 16
+  now explicitly preserves that guard while adding id resolution.
+- Why: These are unambiguous queue-boundary and output-contract corrections.
+  They do not change identity, scope ordering, independence, partial-write
+  behavior, egress, policy, or the Task 16 id-addressing intent.

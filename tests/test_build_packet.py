@@ -304,6 +304,46 @@ class TestTriageQueue(unittest.TestCase):
             self.assertIn("level", item)
             self.assertIn("rule_id", item)
 
+    def test_empty_sarif_list_json_is_an_empty_array(self):
+        with temp_tree({"empty.sarif": '{"version": "2.1.0", "runs": []}'}) as root:
+            sarif = root / "empty.sarif"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_packet.py"),
+                    "--sarif", str(sarif), "--list", "--json",
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout), [])
+
+    def test_negative_limit_refuses_and_zero_is_empty(self):
+        self.assertEqual(build_packet.apply_filters(self.items(), limit=0), [])
+        with self.assertRaisesRegex(
+            ValueError, r"--limit must not be negative, got -1"
+        ):
+            build_packet.apply_filters(self.items(), limit=-1)
+
+    def test_empty_sarif_selection_refuses_with_scan_guidance(self):
+        with temp_tree({"empty.sarif": '{"version": "2.1.0", "runs": []}'}) as root:
+            sarif = root / "empty.sarif"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_packet.py"),
+                    "--sarif", str(sarif), "--index", "0",
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(
+            proc.stderr,
+            f"No findings in {sarif}. Run `make scan` first.\n",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
