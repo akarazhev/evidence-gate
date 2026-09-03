@@ -1096,6 +1096,8 @@ git commit -m "fix: stop claiming adversarial validation that never ran"
 **Files:**
 - Modify: `scripts/record_verdict.py:202-269`, `:272-372`
 - Modify: `tests/test_record_verdict.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `make_verdict`, `make_challenge` из Task 5.
@@ -1144,9 +1146,10 @@ class TestSarifAccumulation(unittest.TestCase):
             with self.assertRaises(record_verdict.ValidationError):
                 record_verdict.load_existing_results(root / "reviewed.sarif")
 
-    # The CLI-level test for --fresh lives in Task 12's TestFreshFlag: the
-    # recorder's required arguments only settle there, and a CLI test written
-    # here would need rewriting one task later.
+    # Two CLI-level tests for this task live in Task 12's
+    # TestIndependenceControl instead: --fresh, and the refusal on malformed
+    # existing SARIF. Both need --log so they do not write into the real
+    # findings/ directory, and --log only exists from Task 12 onward.
 
     def test_round_trip_through_document(self):
         doc = record_verdict.sarif_document([self.result_for("F-1")])
@@ -1161,7 +1164,8 @@ class TestSarifAccumulation(unittest.TestCase):
 - [ ] **Step 2: Прогнать, убедиться что падает**
 
 Run: `python3 -m unittest tests.test_record_verdict.TestSarifAccumulation -v`
-Expected: FAIL с `AttributeError: module 'record_verdict' has no attribute 'build_result'`.
+Expected: FAIL with `AttributeError` for the required new helper API. Test
+ordering may expose a missing helper other than `build_result` first.
 
 - [ ] **Step 3: Разделить построение результата и документа**
 
@@ -1247,7 +1251,7 @@ def merge_result(existing: list[dict], result: dict) -> list[dict]:
     return merged
 ```
 
-- [ ] **Step 5: Подключить в `main`**
+- [ ] **Step 5: Подключить в `main`, разбирая SARIF до любой записи**
 
 Добавить флаг рядом с остальными аргументами:
 
@@ -1256,15 +1260,22 @@ def merge_result(existing: list[dict], result: dict) -> list[dict]:
                         help="Discard the existing reviewed SARIF instead of adding to it")
 ```
 
-Заменить блок записи SARIF:
+**Порядок здесь и есть предмет задачи.** Разбор существующего SARIF обязан идти до `append_log`. Лог append-only: строка, записанная перед отказом, не может быть отозвана, и два артефакта расходятся навсегда. Вставить непосредственно **перед** вызовом `append_log(`:
 
 ```python
+    # Parse the existing SARIF before writing anything. The triage log is
+    # append-only, so a row written ahead of a SARIF failure could never be
+    # withdrawn and the two artefacts would disagree permanently.
     try:
         existing = [] if args.fresh else load_existing_results(args.sarif_out)
     except ValidationError as exc:
         print(f"SARIF ERROR: {exc}", file=sys.stderr)
         return 1
+```
 
+И заменить прежний блок записи SARIF на слияние и запись, без повторного чтения:
+
+```python
     results = merge_result(existing, build_result(verdict, challenge, state, rationale))
     args.sarif_out.parent.mkdir(parents=True, exist_ok=True)
     args.sarif_out.write_text(json.dumps(sarif_document(results), indent=2), encoding="utf-8")
@@ -2094,6 +2105,28 @@ class TestIndependenceControl(unittest.TestCase):
                 root,
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_malformed_sarif_refuses_before_touching_the_log(self):
+        # Deferred from Task 8 alongside the --fresh test. Regression for the
+        # ordering requirement: the log is append-only, so a row written ahead
+        # of a SARIF failure could never be withdrawn.
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            sarif.write_text("{ not json", encoding="utf-8")
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--sarif-out", str(sarif),
+                    "--log", str(log),
+                ],
+                root,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("SARIF ERROR", proc.stderr)
+        self.assertFalse(log.exists(), "a refused run must not create the log")
 
     def test_distinct_models_are_accepted(self):
         with temp_tree({"placeholder": ""}) as root:

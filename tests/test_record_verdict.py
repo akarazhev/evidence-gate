@@ -5,9 +5,11 @@ is written verbatim into SARIF. A rationale that overstates what was verified
 is a defect of the same kind this whole workflow exists to catch.
 """
 
+import json
 import unittest
 
 import record_verdict
+from tests.helpers import temp_tree
 
 
 def make_verdict(**overrides) -> dict:
@@ -165,6 +167,57 @@ class TestDecideState(unittest.TestCase):
                 "validation under policy",
             ),
         )
+
+
+class TestSarifAccumulation(unittest.TestCase):
+    """docs/04 loops record_verdict over many verdicts; each call must keep
+    the previous ones. A single-result write silently discards the batch."""
+
+    def result_for(self, fid, state="confirmed"):
+        return record_verdict.build_result(
+            make_verdict(finding_id=fid), None, state, "rationale text"
+        )
+
+    def test_second_finding_does_not_evict_the_first(self):
+        merged = record_verdict.merge_result([], self.result_for("F-1"))
+        merged = record_verdict.merge_result(merged, self.result_for("F-2"))
+        ids = [r["properties"]["finding_id"] for r in merged]
+        self.assertEqual(ids, ["F-1", "F-2"])
+
+    def test_rerecording_replaces_rather_than_duplicates(self):
+        merged = record_verdict.merge_result([], self.result_for("F-1", "confirmed"))
+        merged = record_verdict.merge_result(merged, self.result_for("F-1", "dismissed"))
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["properties"]["state"], "dismissed")
+
+    def test_order_is_deterministic(self):
+        merged = record_verdict.merge_result([], self.result_for("F-9"))
+        merged = record_verdict.merge_result(merged, self.result_for("F-1"))
+        ids = [r["properties"]["finding_id"] for r in merged]
+        self.assertEqual(ids, sorted(ids))
+
+    def test_absent_file_yields_empty_list(self):
+        with temp_tree({}) as root:
+            self.assertEqual(
+                record_verdict.load_existing_results(root / "reviewed.sarif"), []
+            )
+
+    def test_unparseable_file_refuses_rather_than_overwriting(self):
+        with temp_tree({"reviewed.sarif": "{ this is not json"}) as root:
+            with self.assertRaises(record_verdict.ValidationError):
+                record_verdict.load_existing_results(root / "reviewed.sarif")
+
+    # Two CLI-level tests for this task live in Task 12's
+    # TestIndependenceControl instead: --fresh, and the refusal on malformed
+    # existing SARIF. Both need --log so they do not write into the real
+    # findings/ directory, and --log only exists from Task 12 onward.
+
+    def test_round_trip_through_document(self):
+        doc = record_verdict.sarif_document([self.result_for("F-1")])
+        with temp_tree({}) as root:
+            path = root / "reviewed.sarif"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(len(record_verdict.load_existing_results(path)), 1)
 
 
 if __name__ == "__main__":

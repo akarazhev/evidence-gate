@@ -217,8 +217,8 @@ def append_log(row: dict) -> None:
         writer.writerow({k: row.get(k, "") for k in LOG_FIELDS})
 
 
-def to_sarif(verdict: dict, challenge: dict | None, state: str, rationale: str) -> dict:
-    """Emit SARIF so reviewed findings enter the same store as scanner output.
+def build_result(verdict: dict, challenge: dict | None, state: str, rationale: str) -> dict:
+    """Build one SARIF result for a reviewed finding.
 
     Dismissed findings carry a SARIF suppression, which is how a findings store
     learns not to re-raise them on the next scan.
@@ -269,6 +269,10 @@ def to_sarif(verdict: dict, challenge: dict | None, state: str, rationale: str) 
             }
         ]
 
+    return result
+
+
+def sarif_document(results: list[dict]) -> dict:
     return {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
@@ -281,10 +285,43 @@ def to_sarif(verdict: dict, challenge: dict | None, state: str, rationale: str) 
                         "version": "1.0.0",
                     }
                 },
-                "results": [result],
+                "results": results,
             }
         ],
     }
+
+
+def load_existing_results(path: Path) -> list[dict]:
+    """Read previously recorded results so a new one joins them.
+
+    A file we cannot parse is a refusal, not a licence to overwrite: the
+    reviewed SARIF is the audit trail's current-state view, and silently
+    discarding it would lose every earlier verdict.
+    """
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValidationError(
+            f"Cannot read {path}: {exc}. Refusing to overwrite a file that "
+            "cannot be parsed. Move it aside, or pass --fresh to start over."
+        ) from exc
+    runs = data.get("runs") or []
+    if not runs:
+        return []
+    return runs[0].get("results", [])
+
+
+def merge_result(existing: list[dict], result: dict) -> list[dict]:
+    """Replace the result with the same finding_id, or append it."""
+    fid = result["properties"]["finding_id"]
+    merged = [
+        r for r in existing if r.get("properties", {}).get("finding_id") != fid
+    ]
+    merged.append(result)
+    merged.sort(key=lambda r: r.get("properties", {}).get("finding_id", ""))
+    return merged
 
 
 def main() -> int:
@@ -294,6 +331,8 @@ def main() -> int:
     parser.add_argument("--minutes", type=float, help="Engineer time spent, for metrics")
     parser.add_argument("--notes", default="")
     parser.add_argument("--sarif-out", type=Path, default=SARIF_OUT)
+    parser.add_argument("--fresh", action="store_true",
+                        help="Discard the existing reviewed SARIF instead of adding to it")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero unless the finding reaches a terminal state")
     args = parser.parse_args()
@@ -344,6 +383,15 @@ def main() -> int:
     state, rationale = decide_state(verdict, challenge)
     loc = verdict.get("location", {})
 
+    # Parse the existing SARIF before writing anything. The triage log is
+    # append-only, so a row written ahead of a SARIF failure could never be
+    # withdrawn and the two artefacts would disagree permanently.
+    try:
+        existing = [] if args.fresh else load_existing_results(args.sarif_out)
+    except ValidationError as exc:
+        print(f"SARIF ERROR: {exc}", file=sys.stderr)
+        return 1
+
     append_log(
         {
             "reviewed_at": verdict.get("reviewer", {}).get(
@@ -368,9 +416,9 @@ def main() -> int:
         }
     )
 
-    sarif = to_sarif(verdict, challenge, state, rationale)
+    results = merge_result(existing, build_result(verdict, challenge, state, rationale))
     args.sarif_out.parent.mkdir(parents=True, exist_ok=True)
-    args.sarif_out.write_text(json.dumps(sarif, indent=2), encoding="utf-8")
+    args.sarif_out.write_text(json.dumps(sarif_document(results), indent=2), encoding="utf-8")
 
     print(f"{verdict['finding_id']}: {state}")
     print(f"  {rationale}")
