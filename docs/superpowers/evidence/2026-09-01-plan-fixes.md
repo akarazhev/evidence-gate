@@ -141,3 +141,15 @@
   causing a real scan and possible network access. The fake makes both branches
   hermetic and behaviorally proves the config/telemetry arguments without
   changing production behavior or task scope.
+
+## Task 15 file list and Task 14 evidence backfill
+
+- Before: Task 15 listed only its two scripts and queue test file, while Task
+  14's RED evidence still named a pending green commit.
+- After: Task 15's file list includes the red-test and plan-fixes evidence
+  files, and Task 14's green commit is recorded as
+  `44b50453aa9fa26677dd9585ae112ae8e6849d01`.
+- Why: The execution direction explicitly assigns this final Task 14 evidence
+  backfill to Task 15. Both changes are unambiguous documentation completeness
+  corrections and do not affect queue behavior, scope, identity, independence,
+  partial-write guarantees, or egress.

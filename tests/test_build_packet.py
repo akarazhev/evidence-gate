@@ -5,11 +5,15 @@ scope check runs before any file content is read, and that claim is what makes
 the data-handling story true.
 """
 
+import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 import build_packet
 import check_scope
+from tests import REPO_ROOT
 from tests.helpers import FIXTURES, fixture_exclusions, temp_tree
 
 SARIF = FIXTURES / "sample.sarif"
@@ -225,6 +229,80 @@ class TestFindingIdentity(unittest.TestCase):
                 results[1], repo, fixture_exclusions()
             )
         self.assertTrue(fid.startswith("F-"))
+
+
+class TestTriageQueue(unittest.TestCase):
+    def items(self):
+        results = build_packet.load_sarif_results(SARIF)
+        # Annotate without a repo so ids come back None; the filters under test
+        # do not depend on identity except through reviewed_ids.
+        with temp_tree({}) as repo:
+            return build_packet.annotate(results, repo, fixture_exclusions())
+
+    def test_level_filter(self):
+        out = build_packet.apply_filters(self.items(), levels=["error"])
+        self.assertEqual([i["level"] for i in out], ["error"])
+
+    def test_level_filter_accepts_several(self):
+        out = build_packet.apply_filters(self.items(), levels=["error", "note"])
+        self.assertEqual(len(out), 2)
+
+    def test_rule_substring_filter(self):
+        out = build_packet.apply_filters(self.items(), rule="injection")
+        self.assertEqual(len(out), 1)
+        self.assertIn("injection", out[0]["rule_id"])
+
+    def test_path_glob_filter(self):
+        out = build_packet.apply_filters(self.items(), path_glob="app/*.py")
+        self.assertEqual({i["file"] for i in out}, {"app/handler.py", "app/db.py"})
+
+    def test_filters_combine(self):
+        out = build_packet.apply_filters(
+            self.items(), levels=["error", "warning"], path_glob="app/*.py", limit=1
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["level"], "error")
+
+    def test_sort_is_deterministic_and_severity_first(self):
+        out = build_packet.apply_filters(self.items())
+        self.assertEqual([i["level"] for i in out], ["error", "warning", "note"])
+
+    def test_unreviewed_filter_hides_findings_with_verdicts(self):
+        items = self.items()
+        items[0]["finding_id"] = "F-aaaaaaaaaaaa"
+        items[1]["finding_id"] = "F-bbbbbbbbbbbb"
+        out = build_packet.apply_filters(items, reviewed_ids={"F-aaaaaaaaaaaa"})
+        self.assertNotIn("F-aaaaaaaaaaaa", [i["finding_id"] for i in out])
+
+    def test_reviewed_ids_are_read_from_verdict_filenames(self):
+        with temp_tree(
+            {"verdicts/F-aaaaaaaaaaaa.json": "{}", "verdicts/F-bbbbbbbbbbbb.json": "{}"}
+        ) as root:
+            found = build_packet.reviewed_finding_ids(root / "verdicts")
+        self.assertEqual(found, {"F-aaaaaaaaaaaa", "F-bbbbbbbbbbbb"})
+
+    def test_absent_verdict_directory_is_empty_not_an_error(self):
+        with temp_tree({}) as root:
+            self.assertEqual(build_packet.reviewed_finding_ids(root / "nope"), set())
+
+    def test_json_output_is_machine_readable(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "build_packet.py"),
+                "--sarif", str(SARIF), "--list", "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(len(payload), 3)
+        for item in payload:
+            self.assertIn("finding_id", item)
+            self.assertIn("in_scope", item)
+            self.assertIn("level", item)
+            self.assertIn("rule_id", item)
 
 
 if __name__ == "__main__":

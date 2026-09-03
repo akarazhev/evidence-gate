@@ -2752,6 +2752,8 @@ git commit -m "fix: default the scanner to local rules and disable telemetry"
 - Modify: `scripts/check_scope.py`
 - Modify: `scripts/build_packet.py:200-280`
 - Modify: `tests/test_build_packet.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `build_packet.compute_finding_id`, `build_packet._in_scope`.

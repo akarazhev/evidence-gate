@@ -133,6 +133,15 @@ def _matches(path: str, pattern: str) -> bool:
     return False
 
 
+def matches(path: str, pattern: str) -> bool:
+    """Public entry point for the policy's glob matcher.
+
+    Exposed so the triage queue can filter paths with exactly the semantics the
+    exclusion policy uses, rather than growing a second, subtly different one.
+    """
+    return _matches(path, pattern)
+
+
 def check_path(path: str, exclusions: list[dict] | None = None) -> None:
     """Raise ScopeViolation if `path` is excluded. Returns None when allowed."""
     if exclusions is None:

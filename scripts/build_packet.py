@@ -23,7 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_scope import ScopeViolation, check_path, load_policy  # noqa: E402
+from check_scope import (  # noqa: E402
+    ScopeViolation,
+    check_path,
+    load_policy,
+    matches as check_scope_matches,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONTEXT_LINES = 40
@@ -302,6 +307,70 @@ def build_challenge_packet(verdict: dict) -> dict:
     }
 
 
+# error first, because that is the order a reviewer wants to work in.
+LEVEL_ORDER = {"error": 0, "warning": 1, "note": 2, "none": 3}
+
+
+def annotate(results: list[dict], repo: Path, exclusions: list[dict]) -> list[dict]:
+    """Attach identity and scope status to each result."""
+    annotated = []
+    for result in results:
+        item = dict(result)
+        try:
+            item["finding_id"] = compute_finding_id(result, repo, exclusions)
+        except (ScopeViolation, FileNotFoundError, ValueError):
+            # Excluded, absent, or unidentifiable. Never read an excluded file
+            # just to print a label for it.
+            item["finding_id"] = None
+        item["in_scope"] = _in_scope(result["file"], exclusions)
+        annotated.append(item)
+    return annotated
+
+
+def reviewed_finding_ids(verdict_dir: Path) -> set[str]:
+    """Ids that already have a verdict on disk, taken from filenames."""
+    if not verdict_dir.exists():
+        return set()
+    return {path.stem for path in verdict_dir.glob("*.json")}
+
+
+def apply_filters(
+    items: list[dict],
+    levels: list[str] | None = None,
+    rule: str | None = None,
+    path_glob: str | None = None,
+    reviewed_ids: set[str] | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    """Narrow the queue using what the SARIF actually carries.
+
+    Filtering is on scanner `level`, rule id and path — never on policy
+    severity or priority class. Those are assigned by the agent during triage
+    and do not exist yet at listing time; mapping SARIF levels onto them here
+    would manufacture a confidence nobody earned.
+    """
+    out = list(items)
+    if levels:
+        wanted = {level.strip().lower() for level in levels if level.strip()}
+        out = [item for item in out if item["level"].lower() in wanted]
+    if rule:
+        out = [item for item in out if rule.lower() in item["rule_id"].lower()]
+    if path_glob:
+        out = [item for item in out if check_scope_matches(item["file"], path_glob)]
+    if reviewed_ids is not None:
+        out = [item for item in out if item["finding_id"] not in reviewed_ids]
+    out.sort(
+        key=lambda item: (
+            LEVEL_ORDER.get(item["level"].lower(), 9),
+            item["file"],
+            item["start_line"],
+        )
+    )
+    if limit is not None:
+        out = out[:limit]
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sarif", type=Path, help="SARIF input")
@@ -312,15 +381,28 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--context-lines", type=int, default=DEFAULT_CONTEXT_LINES)
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "findings" / "packets")
+    parser.add_argument("--level", help="Comma-separated SARIF levels, e.g. error,warning")
+    parser.add_argument("--rule", help="Substring match on the rule id")
+    parser.add_argument("--path", dest="path_glob", help="Glob on the file path")
+    parser.add_argument(
+        "--unreviewed", action="store_true", help="Hide findings that already have a verdict on disk"
+    )
+    parser.add_argument("--limit", type=int, help="Show at most N findings")
+    parser.add_argument("--json", dest="as_json", action="store_true", help="Machine-readable output")
+    parser.add_argument(
+        "--verdicts",
+        type=Path,
+        default=REPO_ROOT / "findings" / "verdicts",
+        help="Where recorded verdicts live, for --unreviewed",
+    )
     args = parser.parse_args()
-
-    args.out.mkdir(parents=True, exist_ok=True)
 
     if args.challenge:
         if not args.verdict:
             parser.error("--challenge requires --verdict")
         verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
         packet = build_challenge_packet(verdict)
+        args.out.mkdir(parents=True, exist_ok=True)
         path = args.out / f"{packet['finding_id']}-challenge.json"
         path.write_text(json.dumps(packet, indent=2), encoding="utf-8")
         print(f"Challenge packet: {path}")
@@ -341,27 +423,58 @@ def main() -> int:
 
     if args.list or args.index is None:
         exclusions, _ = load_policy()
-        print(f"{len(results)} finding(s):\n")
-        for i, r in enumerate(results):
-            try:
-                fid = compute_finding_id(r, args.repo, exclusions)
-            except (ScopeViolation, FileNotFoundError, ValueError):
-                # Out of scope, absent, or unidentifiable. Never read a file the
-                # policy excludes just to print a label for it.
-                fid = None
-            flag = "" if _in_scope(r["file"], exclusions) else "  [OUT OF SCOPE]"
-            label = fid or "(no id)"
-            print(f"  [{i:>3}] {label}  {r['level']:<8} {r['file']}:{r['start_line']}{flag}")
-            print(f"        {r['rule_id']}")
-        print("\nBuild a packet with: make triage N=<index>")
+        items = annotate(results, args.repo, exclusions)
+        shown = apply_filters(
+            items,
+            levels=args.level.split(",") if args.level else None,
+            rule=args.rule,
+            path_glob=args.path_glob,
+            reviewed_ids=reviewed_finding_ids(args.verdicts) if args.unreviewed else None,
+            limit=args.limit,
+        )
+
+        if args.as_json:
+            print(json.dumps(shown, indent=2))
+            return 0
+
+        # "already reviewed" must be a subset of what this SARIF contains.
+        # Counting every file in the verdict directory would fold in findings
+        # from other scans and report a number nobody can reconcile.
+        on_disk = reviewed_finding_ids(args.verdicts)
+        present = {item["finding_id"] for item in items if item["finding_id"]}
+        reviewed = len(present & on_disk)
+        print(f"{len(results)} finding(s) in SARIF, {reviewed} already reviewed, "
+              f"{len(shown)} shown\n")
+        for i, item in enumerate(shown):
+            flag = "" if item["in_scope"] else "  [OUT OF SCOPE]"
+            label = item["finding_id"] or "(no id)"
+            print(f"  [{i:>3}] {label}  {item['level']:<8} "
+                  f"{item['file']}:{item['start_line']}{flag}")
+            print(f"        {item['rule_id']}")
+        print("\nIndices are positions in this filtered list and change when the")
+        print("filters change. Use the id for anything you want to reproduce:")
+        print("  make triage ID=<finding-id>   or   make triage N=<index>")
         return 0
 
-    if not 0 <= args.index < len(results):
-        print(f"Index out of range (0..{len(results) - 1})", file=sys.stderr)
+    exclusions, _ = load_policy()
+    items = annotate(results, args.repo, exclusions)
+    shown = apply_filters(
+        items,
+        levels=args.level.split(",") if args.level else None,
+        rule=args.rule,
+        path_glob=args.path_glob,
+        reviewed_ids=reviewed_finding_ids(args.verdicts) if args.unreviewed else None,
+        limit=args.limit,
+    )
+
+    if not 0 <= args.index < len(shown):
+        print(f"Index out of range (0..{len(shown) - 1})", file=sys.stderr)
         return 1
 
     try:
-        packet = build_triage_packet(results[args.index], args.repo, args.context_lines)
+        packet = build_triage_packet(
+            shown[args.index], args.repo, args.context_lines, exclusions
+        )
     except ScopeViolation as exc:
         print("REFUSED: finding touches an excluded path.\n", file=sys.stderr)
         print(f"  path:    {exc.path}", file=sys.stderr)
@@ -373,6 +486,7 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{packet['finding_id']}.json"
     path.write_text(json.dumps(packet, indent=2), encoding="utf-8")
     print(f"Packet: {path}")
