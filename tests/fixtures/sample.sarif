@@ -1,0 +1,84 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "semgrep",
+          "rules": [
+            {
+              "id": "python.lang.security.audit.exec-detected",
+              "shortDescription": { "text": "exec detected" },
+              "fullDescription": { "text": "Detected the use of exec" }
+            },
+            {
+              "id": "python.django.security.injection.sql",
+              "shortDescription": { "text": "SQL injection" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "python.lang.security.audit.exec-detected",
+          "level": "error",
+          "message": { "text": "Detected the use of exec" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/handler.py" },
+                "region": { "startLine": 5, "endLine": 5 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "python.django.security.injection.sql",
+          "level": "warning",
+          "message": { "text": "SQL injection" },
+          "partialFingerprints": { "semgrep.fingerprint": "abc123def456" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/db.py" },
+                "region": { "startLine": 2, "endLine": 2 }
+              }
+            }
+          ],
+          "codeFlows": [
+            {
+              "threadFlows": [
+                {
+                  "locations": [
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": { "uri": "app/routes.py" },
+                          "region": { "startLine": 3 }
+                        },
+                        "message": { "text": "source: request parameter" }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "generic.secrets.env-file",
+          "level": "note",
+          "message": { "text": "Secret material" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "secrets/prod.env" },
+                "region": { "startLine": 1, "endLine": 1 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

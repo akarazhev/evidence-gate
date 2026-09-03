@@ -113,11 +113,14 @@ def read_context(file_path: Path, start: int, end: int, window: int) -> str | No
     return "\n".join(numbered)
 
 
-def build_triage_packet(result: dict, repo: Path, window: int) -> dict:
+def build_triage_packet(
+    result: dict, repo: Path, window: int, exclusions: list[dict] | None = None
+) -> dict:
     fid = finding_id(result["rule_id"], result["file"], result["start_line"])
 
     # Scope check before any file content is read. This ordering is the point.
-    exclusions, _ = load_policy()
+    if exclusions is None:
+        exclusions, _ = load_policy()
     candidates = [result["file"]] + [
         step["file"] for flow in result["code_flows"] for step in flow["steps"]
     ]
