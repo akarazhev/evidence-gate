@@ -66,13 +66,13 @@
           ]
         },
         {
-          "ruleId": "generic.secrets.env-file",
+          "ruleId": "generic.secrets.private-key-detected",
           "level": "note",
-          "message": { "text": "Secret material" },
+          "message": { "text": "Private key material" },
           "locations": [
             {
               "physicalLocation": {
-                "artifactLocation": { "uri": "secrets/prod.env" },
+                "artifactLocation": { "uri": "config/server.pem" },
                 "region": { "startLine": 1, "endLine": 1 }
               }
             }

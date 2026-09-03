@@ -43,7 +43,10 @@ class TestScopeCheckOrdering(unittest.TestCase):
     def test_excluded_path_refuses_even_when_file_is_absent(self):
         results = build_packet.load_sarif_results(SARIF)
         excluded = results[2]
-        self.assertEqual(excluded["file"], "secrets/prod.env")
+        # Excluded by **/*.pem under BOTH the fixture policy and the live one.
+        # The manual check in Task 11 Step 8 runs against the live policy, so a
+        # fixture path excluded only by the fixture would look in-scope there.
+        self.assertEqual(excluded["file"], "config/server.pem")
 
         # Empty tree: the file does not exist. If the builder read first and
         # checked second, this would raise FileNotFoundError instead.
@@ -76,6 +79,152 @@ class TestReadContext(unittest.TestCase):
 
     def test_missing_file_returns_none(self):
         self.assertIsNone(build_packet.read_context(Path("/nope/absent.py"), 1, 1, 3))
+
+
+FILE_BEFORE = "import os\n\n\ndef run(cmd):\n    exec(cmd)\n"
+FILE_AFTER = "import os\nimport sys\n\n\ndef run(cmd):\n    exec(cmd)\n"
+
+
+def result_at(path="app/handler.py", start=5, end=5, **extra):
+    base = {
+        "rule_id": "python.lang.security.audit.exec-detected",
+        "file": path,
+        "start_line": start,
+        "end_line": end,
+    }
+    base.update(extra)
+    return base
+
+
+class TestFindingIdentity(unittest.TestCase):
+    """The old id hashed the line number, so any edit above a finding gave it a
+    new identity: its verdicts were orphaned and dismissed findings came back."""
+
+    def test_line_shift_preserves_identity(self):
+        with temp_tree({"app/handler.py": FILE_BEFORE}) as repo:
+            before = build_packet.compute_finding_id(
+                result_at(start=5, end=5), repo, fixture_exclusions()
+            )
+        with temp_tree({"app/handler.py": FILE_AFTER}) as repo:
+            after = build_packet.compute_finding_id(
+                result_at(start=6, end=6), repo, fixture_exclusions()
+            )
+        self.assertEqual(before, after)
+
+    def test_changing_the_fragment_changes_identity(self):
+        with temp_tree({"app/handler.py": FILE_BEFORE}) as repo:
+            original = build_packet.compute_finding_id(
+                result_at(start=5, end=5), repo, fixture_exclusions()
+            )
+        edited = FILE_BEFORE.replace("exec(cmd)", "exec(shlex.quote(cmd))")
+        with temp_tree({"app/handler.py": edited}) as repo:
+            changed = build_packet.compute_finding_id(
+                result_at(start=5, end=5), repo, fixture_exclusions()
+            )
+        self.assertNotEqual(original, changed)
+
+    def test_identical_fragments_get_distinct_identities(self):
+        text = "a = 1\nexec(cmd)\nb = 2\nexec(cmd)\n"
+        with temp_tree({"app/handler.py": text}) as repo:
+            first = build_packet.compute_finding_id(
+                result_at(start=2, end=2), repo, fixture_exclusions()
+            )
+            second = build_packet.compute_finding_id(
+                result_at(start=4, end=4), repo, fixture_exclusions()
+            )
+        self.assertNotEqual(first, second)
+
+    def test_indentation_change_preserves_identity(self):
+        with temp_tree({"app/handler.py": FILE_BEFORE}) as repo:
+            original = build_packet.compute_finding_id(
+                result_at(start=5, end=5), repo, fixture_exclusions()
+            )
+        reindented = FILE_BEFORE.replace("    exec(cmd)", "        exec(cmd)")
+        with temp_tree({"app/handler.py": reindented}) as repo:
+            same = build_packet.compute_finding_id(
+                result_at(start=5, end=5), repo, fixture_exclusions()
+            )
+        self.assertEqual(original, same)
+
+    def test_scanner_fingerprint_wins_and_needs_no_file(self):
+        result = result_at(partialFingerprints={"semgrep.fingerprint": "abc123"})
+        with temp_tree({}) as repo:
+            fid = build_packet.compute_finding_id(result, repo, fixture_exclusions())
+        self.assertTrue(fid.startswith("F-"))
+
+    def test_fingerprint_key_choice_is_deterministic(self):
+        a = build_packet.scanner_fingerprint(
+            {"partialFingerprints": {"zeta": "1", "alpha": "2"}}
+        )
+        b = build_packet.scanner_fingerprint(
+            {"partialFingerprints": {"alpha": "2", "zeta": "1"}}
+        )
+        self.assertEqual(a, b)
+
+    def test_preferred_fingerprint_key_wins_over_alphabetical(self):
+        fp = build_packet.scanner_fingerprint(
+            {"partialFingerprints": {"aaa": "x", "primaryLocationLineHash": "y"}}
+        )
+        self.assertIn("primaryLocationLineHash", fp)
+
+    def test_excluded_path_refuses_before_reading(self):
+        with temp_tree({}) as repo:
+            with self.assertRaises(check_scope.ScopeViolation):
+                build_packet.compute_finding_id(
+                    result_at(path="secrets/prod.env", start=1, end=1),
+                    repo,
+                    fixture_exclusions(),
+                )
+
+    def test_excluded_path_refuses_even_with_a_fingerprint(self):
+        # The fingerprint path needs no file, so nothing would be leaked. It is
+        # still refused: an id for a finding that can never become a packet is
+        # a loose end, and the listing promises (no id) for excluded paths.
+        with temp_tree({}) as repo:
+            with self.assertRaises(check_scope.ScopeViolation):
+                build_packet.compute_finding_id(
+                    result_at(
+                        path="secrets/prod.env",
+                        start=1,
+                        end=1,
+                        partialFingerprints={"semgrep.fingerprint": "deadbeef"},
+                    ),
+                    repo,
+                    fixture_exclusions(),
+                )
+
+    def test_empty_region_is_reported_clearly(self):
+        with temp_tree({"app/handler.py": "\n\n\n"}) as repo:
+            with self.assertRaises(ValueError):
+                build_packet.compute_finding_id(
+                    result_at(start=1, end=2), repo, fixture_exclusions()
+                )
+
+    def test_packet_records_the_identity_scheme(self):
+        results = build_packet.load_sarif_results(SARIF)
+        with temp_tree({"app/handler.py": FILE_BEFORE, "app/db.py": "q = f'{x}'\n"}) as repo:
+            packet = build_packet.build_triage_packet(
+                results[0], repo, 40, fixture_exclusions()
+            )
+        self.assertEqual(packet["id_scheme"], build_packet.ID_SCHEME)
+
+    def test_fingerprints_survive_sarif_parsing(self):
+        results = build_packet.load_sarif_results(SARIF)
+        self.assertEqual(
+            results[1]["partialFingerprints"],
+            {"semgrep.fingerprint": "abc123def456"},
+        )
+
+    def test_real_sarif_input_uses_the_scanner_fingerprint(self):
+        # An empty repository: the content path would raise FileNotFoundError,
+        # so a returned id proves the fingerprint path actually ran on input
+        # that came through load_sarif_results rather than a hand-built dict.
+        results = build_packet.load_sarif_results(SARIF)
+        with temp_tree({}) as repo:
+            fid = build_packet.compute_finding_id(
+                results[1], repo, fixture_exclusions()
+            )
+        self.assertTrue(fid.startswith("F-"))
 
 
 if __name__ == "__main__":

@@ -516,13 +516,13 @@ def build_triage_packet(
           ]
         },
         {
-          "ruleId": "generic.secrets.env-file",
+          "ruleId": "generic.secrets.private-key-detected",
           "level": "note",
-          "message": { "text": "Secret material" },
+          "message": { "text": "Private key material" },
           "locations": [
             {
               "physicalLocation": {
-                "artifactLocation": { "uri": "secrets/prod.env" },
+                "artifactLocation": { "uri": "config/server.pem" },
                 "region": { "startLine": 1, "endLine": 1 }
               }
             }
@@ -584,7 +584,10 @@ class TestScopeCheckOrdering(unittest.TestCase):
     def test_excluded_path_refuses_even_when_file_is_absent(self):
         results = build_packet.load_sarif_results(SARIF)
         excluded = results[2]
-        self.assertEqual(excluded["file"], "secrets/prod.env")
+        # Excluded by **/*.pem under BOTH the fixture policy and the live one.
+        # The manual check in Task 11 Step 8 runs against the live policy, so a
+        # fixture path excluded only by the fixture would look in-scope there.
+        self.assertEqual(excluded["file"], "config/server.pem")
 
         # Empty tree: the file does not exist. If the builder read first and
         # checked second, this would raise FileNotFoundError instead.
@@ -1624,6 +1627,8 @@ git commit -m "fix: match exclusions case-insensitively and cover .envrc"
 **Files:**
 - Modify: `scripts/build_packet.py:32-35`, `:116-180`, `:200-280`
 - Modify: `tests/test_build_packet.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `check_scope.check_path`, `check_scope.ScopeViolation`.
@@ -1985,7 +1990,9 @@ Expected: всё зелёное.
 - [ ] **Step 8: Проверить вручную**
 
 Run: `python3 scripts/build_packet.py --sarif tests/fixtures/sample.sarif --list`
-Expected: три находки, по одной на каждый путь идентичности. `app/db.py` несёт фингерпринт и получает id, не читая файла. `app/handler.py` идёт по содержимому, файла в рабочем каталоге нет, поэтому `(no id)`. `secrets/prod.env` помечена `[OUT OF SCOPE]` и тоже без id.
+Expected: три находки, по одной на каждый путь идентичности. `app/db.py` несёт фингерпринт и получает id, не читая файла. `app/handler.py` идёт по содержимому, файла в рабочем каталоге нет, поэтому `(no id)`. `config/server.pem` помечена `[OUT OF SCOPE]` и тоже без id.
+
+Эта проверка идёт против **живой** `policy/excluded-paths.yml`, а не против фикстуры, поэтому исключённый путь в фикстурном SARIF обязан подпадать под обе политики. Фикстура намеренно независима от живой политики (слой 0), и единственное место, где границы пересекаются, — вот эта ручная проверка.
 
 - [ ] **Step 9: Коммит**
 

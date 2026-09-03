@@ -27,12 +27,107 @@ from check_scope import ScopeViolation, check_path, load_policy  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONTEXT_LINES = 40
+ID_SCHEME = "content-v1"
+
+# Keys we trust first when a scanner emits several. Order is significance, not
+# preference for its own sake: these are the ones scanners document as stable.
+FINGERPRINT_PREFERENCE = ("primaryLocationLineHash", "semgrep.fingerprint")
 
 
-def finding_id(rule_id: str, file_path: str, line: int) -> str:
-    """Stable ID so the same finding keeps its identity across rescans."""
-    digest = hashlib.sha256(f"{rule_id}:{file_path}:{line}".encode()).hexdigest()
-    return f"F-{digest[:12]}"
+def _digest(material: str) -> str:
+    return f"F-{hashlib.sha256(material.encode()).hexdigest()[:12]}"
+
+
+def scanner_fingerprint(result: dict) -> str | None:
+    """The scanner's own stable identifier for this finding, when it emits one.
+
+    SARIF 2.1.0 defines fingerprints and partialFingerprints for exactly this
+    purpose, so preferring them means inheriting the scanner's notion of
+    identity rather than inventing a competing one. Key selection is
+    deterministic: a preferred key if present, otherwise the first in sorted
+    order, so two runs over the same result always agree.
+    """
+    for container in ("fingerprints", "partialFingerprints"):
+        prints = result.get(container)
+        if not isinstance(prints, dict) or not prints:
+            continue
+        for key in FINGERPRINT_PREFERENCE:
+            if key in prints:
+                return f"{container}:{key}:{prints[key]}"
+        key = sorted(prints)[0]
+        return f"{container}:{key}:{prints[key]}"
+    return None
+
+
+def normalize_snippet(text: str) -> str:
+    """Drop indentation and blank lines so reformatting does not reset identity."""
+    stripped = (line.strip() for line in text.splitlines())
+    return "\n".join(line for line in stripped if line)
+
+
+def occurrence_index(file_text: str, start_line: int, end_line: int, target: str) -> int:
+    """How many identical normalized snippets appear before this one.
+
+    Without it, two identical fragments in one file would collapse into a
+    single id. Stable under line shifts: inserting lines above moves the
+    finding and its earlier duplicates by the same amount, so the count holds.
+    """
+    lines = file_text.splitlines()
+    span = max(1, end_line - start_line + 1)
+    count = 0
+    for i in range(0, max(0, start_line - 1)):
+        if normalize_snippet("\n".join(lines[i:i + span])) == target:
+            count += 1
+    return count
+
+
+def compute_finding_id(
+    result: dict, repo: Path, exclusions: list[dict] | None = None
+) -> str:
+    """Identity that survives edits elsewhere in the file.
+
+    Guarantee: inserting or deleting lines above the finding does not change
+    the id, so verdicts and SARIF suppressions survive ordinary refactoring.
+
+    Non-guarantee, and deliberately so: editing the flagged fragment itself
+    changes the id. Changed code deserves a fresh review.
+
+    Known limitation: identity combines the fragment with how many identical
+    fragments precede it, so reordering identical fragments within one file
+    swaps their ids.
+
+    Raises ScopeViolation for an excluded path, before either identity path
+    runs. The content path would otherwise read a file the policy forbids, and
+    the fingerprint path — which needs no file — would hand back an id for a
+    finding that can never be turned into a packet. One rule for both keeps the
+    control uniform and the listing honest.
+    """
+    rule_id = result["rule_id"]
+    path = result["file"]
+
+    check_path(path, exclusions)
+
+    fingerprint = scanner_fingerprint(result)
+    if fingerprint:
+        return _digest(f"{rule_id}:{path}:{fingerprint}")
+
+    target_file = repo / path
+    if not target_file.exists():
+        raise FileNotFoundError(
+            f"Source file not found: {target_file}. Run the scan from the "
+            "repository root."
+        )
+
+    text = target_file.read_text(encoding="utf-8", errors="replace")
+    start, end = result["start_line"], result["end_line"]
+    snippet = normalize_snippet("\n".join(text.splitlines()[start - 1:end]))
+    if not snippet:
+        raise ValueError(
+            f"Cannot derive an identity for {path}:{start}-{end}: the flagged "
+            "region is empty or whitespace only."
+        )
+    index = occurrence_index(text, start, end, snippet)
+    return _digest(f"{rule_id}:{path}:{snippet}:{index}")
 
 
 def load_sarif_results(sarif_path: Path) -> list[dict]:
@@ -70,6 +165,11 @@ def load_sarif_results(sarif_path: Path) -> list[dict]:
                     "file": artifact,
                     "start_line": region.get("startLine", 1),
                     "end_line": region.get("endLine", region.get("startLine", 1)),
+                    # Verbatim SARIF spelling: these are passed straight to
+                    # scanner_fingerprint, and renaming them here would add a
+                    # mapping layer whose only job is to be kept in sync.
+                    "fingerprints": result.get("fingerprints") or {},
+                    "partialFingerprints": result.get("partialFingerprints") or {},
                     "code_flows": _extract_code_flows(result),
                 }
             )
@@ -116,9 +216,8 @@ def read_context(file_path: Path, start: int, end: int, window: int) -> str | No
 def build_triage_packet(
     result: dict, repo: Path, window: int, exclusions: list[dict] | None = None
 ) -> dict:
-    fid = finding_id(result["rule_id"], result["file"], result["start_line"])
-
-    # Scope check before any file content is read. This ordering is the point.
+    # Scope check before any file content is read, identity included. This
+    # ordering is the point: compute_finding_id opens the source file.
     if exclusions is None:
         exclusions, _ = load_policy()
     candidates = [result["file"]] + [
@@ -127,6 +226,8 @@ def build_triage_packet(
     for path in candidates:
         if path:
             check_path(path, exclusions)
+
+    fid = compute_finding_id(result, repo, exclusions)
 
     target = repo / result["file"]
     context = read_context(target, result["start_line"], result["end_line"], window)
@@ -157,6 +258,7 @@ def build_triage_packet(
     return {
         "packet_type": "triage",
         "finding_id": fid,
+        "id_scheme": ID_SCHEME,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "procedure": "prompts/triage-finding.md",
         "scanner": {
@@ -238,11 +340,18 @@ def main() -> int:
         return 0
 
     if args.list or args.index is None:
+        exclusions, _ = load_policy()
         print(f"{len(results)} finding(s):\n")
         for i, r in enumerate(results):
-            fid = finding_id(r["rule_id"], r["file"], r["start_line"])
-            flag = "" if _in_scope(r["file"]) else "  [OUT OF SCOPE]"
-            print(f"  [{i:>3}] {fid}  {r['level']:<8} {r['file']}:{r['start_line']}{flag}")
+            try:
+                fid = compute_finding_id(r, args.repo, exclusions)
+            except (ScopeViolation, FileNotFoundError, ValueError):
+                # Out of scope, absent, or unidentifiable. Never read a file the
+                # policy excludes just to print a label for it.
+                fid = None
+            flag = "" if _in_scope(r["file"], exclusions) else "  [OUT OF SCOPE]"
+            label = fid or "(no id)"
+            print(f"  [{i:>3}] {label}  {r['level']:<8} {r['file']}:{r['start_line']}{flag}")
             print(f"        {r['rule_id']}")
         print("\nBuild a packet with: make triage N=<index>")
         return 0
@@ -274,9 +383,9 @@ def main() -> int:
     return 0
 
 
-def _in_scope(path: str) -> bool:
+def _in_scope(path: str, exclusions: list[dict] | None = None) -> bool:
     try:
-        check_path(path)
+        check_path(path, exclusions)
         return True
     except ScopeViolation:
         return False

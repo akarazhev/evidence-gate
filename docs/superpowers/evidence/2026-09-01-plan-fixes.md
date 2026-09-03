@@ -45,3 +45,27 @@
   an unambiguous, local completeness correction and does not change the task
   intent, platform-independent matching behavior, scope, independence,
   partial-write guarantees, or egress.
+
+## Task 11 file list
+
+- Before: Task 11 listed only `scripts/build_packet.py` and
+  `tests/test_build_packet.py` under `Files`.
+- After: The list also names the required red-test evidence file and the
+  plan-fixes evidence file.
+- Why: The execution brief requires the Task 3 green-commit backfill, Task 11
+  RED evidence, and this plan-fixes entry in the task commit. This is an
+  unambiguous, local completeness correction and does not change the task
+  intent, identity behavior, scope ordering, independence, partial-write
+  guarantees, or egress.
+
+## Task 4 fixture path discovered during Task 11
+
+- Before: Task 4's SARIF fixture used `secrets/prod.env`, and its scope-ordering
+  test asserted that path. The path was excluded only by the independent
+  fixture policy.
+- After: The fixture uses `config/server.pem` with rule
+  `generic.secrets.private-key-detected` and message `Private key material`;
+  the ordering test asserts the new path and explains the live-policy boundary.
+- Why: Task 11's manual listing command uses the live policy, not the fixture
+  policy. The `.pem` path is excluded under both, preserving fixture
+  independence while making the manual scope-control verification meaningful.
