@@ -5,6 +5,7 @@ is written verbatim into SARIF. A rationale that overstates what was verified
 is a defect of the same kind this whole workflow exists to catch.
 """
 
+import csv
 import json
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import unittest
 
 import record_verdict
 from tests import REPO_ROOT
-from tests.helpers import temp_tree
+from tests.helpers import temp_tree, write_log
 
 
 def make_verdict(**overrides) -> dict:
@@ -367,6 +368,53 @@ class TestIndependenceControl(unittest.TestCase):
                 root,
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
+
+class TestLogCompatibility(unittest.TestCase):
+    """csv.DictWriter appends happily under a stale header, misaligning every
+    column. A silently corrupted audit trail is worse than a refusal."""
+
+    def test_absent_log_is_fine(self):
+        with temp_tree({}) as root:
+            record_verdict.check_log_compatible(root / "triage-log.csv", "content-v1")
+
+    def test_stale_header_is_refused(self):
+        with temp_tree({"triage-log.csv": "reviewed_at,finding_id\n2026-01-01,F-1\n"}) as root:
+            with self.assertRaises(record_verdict.ValidationError) as ctx:
+                record_verdict.check_log_compatible(root / "triage-log.csv", "content-v1")
+            self.assertIn("missing columns", str(ctx.exception))
+
+    def test_current_header_is_accepted(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [])
+            record_verdict.check_log_compatible(log, "content-v1")
+
+    def test_foreign_id_scheme_is_refused(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [{"finding_id": "F-1", "id_scheme": "line-v0"}])
+            with self.assertRaises(record_verdict.ValidationError) as ctx:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("line-v0", str(ctx.exception))
+
+    def test_log_carries_self_reported_columns(self):
+        self.assertIn("agent_self_reported", record_verdict.LOG_FIELDS)
+        self.assertIn("validator_self_reported", record_verdict.LOG_FIELDS)
+        self.assertIn("id_scheme", record_verdict.LOG_FIELDS)
+
+    def test_empty_log_file_still_gets_a_header(self):
+        # A zero-byte file exists but is not yet a log: an interrupted write or
+        # a stray touch leaves one behind. Appending without a header would put
+        # a data row where csv.DictReader expects column names, and every
+        # column would silently take its name from the first finding.
+        with temp_tree({"triage-log.csv": ""}) as root:
+            log = root / "triage-log.csv"
+            record_verdict.check_log_compatible(log, "content-v1")
+            record_verdict.append_log({"finding_id": "F-1"}, log)
+            with log.open(encoding="utf-8", newline="") as fh:
+                first_line = next(csv.reader(fh))
+        self.assertEqual(first_line, record_verdict.LOG_FIELDS)
 
 
 class TestFallbackValidator(unittest.TestCase):

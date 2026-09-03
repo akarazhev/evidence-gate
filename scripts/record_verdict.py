@@ -30,16 +30,22 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_packet import ID_SCHEME  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = REPO_ROOT / "templates"
 LOG_PATH = REPO_ROOT / "findings" / "triage-log.csv"
 SARIF_OUT = REPO_ROOT / "findings" / "reviewed.sarif"
 
 LOG_FIELDS = [
-    "reviewed_at", "finding_id", "rule_id", "file", "line",
+    "reviewed_at", "finding_id", "id_scheme", "rule_id", "file", "line",
     "severity", "priority_class", "evidence_level", "confidence",
     "initial_verdict", "challenge_result", "final_state",
-    "minutes_spent", "requires_runtime_proof", "agent", "validator", "notes",
+    "minutes_spent", "requires_runtime_proof",
+    "agent", "validator",
+    "agent_self_reported", "validator_self_reported",
+    "notes",
 ]
 
 SEVERITY_SLA = {
@@ -246,12 +252,64 @@ def decide_state(verdict: dict, challenge: dict | None) -> tuple[str, str]:
 
 def append_log(row: dict, path: Path = LOG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    exists = path.exists()
+    # Key the header on content, not on existence. A file that exists but is
+    # empty is not a log yet, and appending to it without a header would put a
+    # data row in the header position, where csv.DictReader would read it as
+    # the column names and corrupt every row that follows.
+    has_header = path.exists() and path.stat().st_size > 0
     with path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
-        if not exists:
+        if not has_header:
             writer.writeheader()
         writer.writerow({k: row.get(k, "") for k in LOG_FIELDS})
+
+
+def check_log_compatible(path: Path, id_scheme: str) -> None:
+    """Refuse to append to a log whose shape or identity scheme differs.
+
+    Two separate hazards. A stale header means csv.DictWriter writes new rows
+    under old column names and every field lands in the wrong place. A foreign
+    id_scheme means the same finding carries a different id in older rows, so
+    metrics would count one finding as two and nobody would notice.
+    """
+    if not path.exists():
+        return
+
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader, None)
+        if header is None:
+            # Empty file: nothing to compare against, and append_log will lay
+            # down the header on the next write. The two functions have to
+            # agree about what an empty file means, or a row lands where the
+            # header belongs.
+            return
+        schemes = set()
+        if "id_scheme" in header:
+            column = header.index("id_scheme")
+            for row in reader:
+                if len(row) > column and row[column]:
+                    schemes.add(row[column])
+
+    if header != LOG_FIELDS:
+        missing = [f for f in LOG_FIELDS if f not in header] or ["none"]
+        extra = [f for f in header if f not in LOG_FIELDS] or ["none"]
+        raise ValidationError(
+            f"{path} has an incompatible header.\n"
+            f"  missing columns: {', '.join(missing)}\n"
+            f"  unexpected columns: {', '.join(extra)}\n"
+            "Archive the existing findings/ directory, or migrate the log, "
+            "before recording new verdicts."
+        )
+
+    foreign = sorted(s for s in schemes if s != id_scheme)
+    if foreign:
+        raise ValidationError(
+            f"{path} contains rows written under identity scheme(s) "
+            f"{', '.join(foreign)}, but this run uses {id_scheme}.\n"
+            "The same finding carries a different id under each scheme, so the "
+            "two cannot share a log. Archive findings/ and re-triage."
+        )
 
 
 def build_result(verdict: dict, challenge: dict | None, state: str, rationale: str) -> dict:
@@ -283,6 +341,7 @@ def build_result(verdict: dict, challenge: dict | None, state: str, rationale: s
         ],
         "properties": {
             "finding_id": verdict["finding_id"],
+            "id_scheme": ID_SCHEME,
             "state": state,
             "state_rationale": rationale,
             "severity": verdict.get("severity"),
@@ -395,6 +454,12 @@ def main() -> int:
         )
         return 2
 
+    try:
+        check_log_compatible(args.log, ID_SCHEME)
+    except ValidationError as exc:
+        print(f"LOG ERROR: {exc}", file=sys.stderr)
+        return 1
+
     verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
     challenge = (
         json.loads(args.challenge.read_text(encoding="utf-8")) if args.challenge else None
@@ -466,6 +531,7 @@ def main() -> int:
                 "reviewed_at", datetime.now(timezone.utc).isoformat()
             ),
             "finding_id": verdict["finding_id"],
+            "id_scheme": ID_SCHEME,
             "rule_id": verdict.get("rule_id", ""),
             "file": loc.get("file", ""),
             "line": loc.get("start_line", ""),
@@ -478,8 +544,12 @@ def main() -> int:
             "final_state": state,
             "minutes_spent": args.minutes if args.minutes is not None else "",
             "requires_runtime_proof": verdict.get("requires_runtime_proof", False),
-            "agent": verdict.get("reviewer", {}).get("agent", ""),
-            "validator": (challenge or {}).get("validator", {}).get("agent", ""),
+            "agent": args.agent,
+            "validator": args.validator or "",
+            "agent_self_reported": verdict.get("reviewer", {}).get("agent", ""),
+            "validator_self_reported": (challenge or {}).get("validator", {}).get(
+                "agent", ""
+            ),
             "notes": args.notes,
         },
         args.log,

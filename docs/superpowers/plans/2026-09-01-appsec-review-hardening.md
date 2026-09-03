@@ -2302,6 +2302,8 @@ git commit -m "feat: refuse same-model validation instead of warning about it"
 **Files:**
 - Modify: `scripts/record_verdict.py:33-51`, `:192-200`, `:326-352`
 - Modify: `tests/test_record_verdict.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `build_packet.ID_SCHEME`.
@@ -2342,9 +2344,22 @@ class TestLogCompatibility(unittest.TestCase):
         self.assertIn("agent_self_reported", record_verdict.LOG_FIELDS)
         self.assertIn("validator_self_reported", record_verdict.LOG_FIELDS)
         self.assertIn("id_scheme", record_verdict.LOG_FIELDS)
+
+    def test_empty_log_file_still_gets_a_header(self):
+        # A zero-byte file exists but is not yet a log: an interrupted write or
+        # a stray touch leaves one behind. Appending without a header would put
+        # a data row where csv.DictReader expects column names, and every
+        # column would silently take its name from the first finding.
+        with temp_tree({"triage-log.csv": ""}) as root:
+            log = root / "triage-log.csv"
+            record_verdict.check_log_compatible(log, "content-v1")
+            record_verdict.append_log({"finding_id": "F-1"}, log)
+            with log.open(encoding="utf-8", newline="") as fh:
+                first_line = next(csv.reader(fh))
+        self.assertEqual(first_line, record_verdict.LOG_FIELDS)
 ```
 
-Добавить `from tests.helpers import write_log` в шапку.
+Добавить `import csv` и `from tests.helpers import write_log` в шапку.
 
 - [ ] **Step 2: Прогнать**
 
@@ -2376,6 +2391,28 @@ from build_packet import ID_SCHEME  # noqa: E402
 
 - [ ] **Step 4: Добавить проверку совместимости**
 
+Сначала закрыть расхождение между двумя функциями. `append_log` решает, писать
+ли заголовок, по факту существования файла, а `check_log_compatible` считает файл
+без заголовка не требующим проверки. Пустой файл проваливается в щель между ними.
+Заменить `append_log`:
+
+```python
+def append_log(row: dict, path: Path = LOG_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Key the header on content, not on existence. A file that exists but is
+    # empty is not a log yet, and appending to it without a header would put a
+    # data row in the header position, where csv.DictReader would read it as
+    # the column names and corrupt every row that follows.
+    has_header = path.exists() and path.stat().st_size > 0
+    with path.open("a", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
+        if not has_header:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in LOG_FIELDS})
+```
+
+Затем добавить саму проверку:
+
 ```python
 def check_log_compatible(path: Path, id_scheme: str) -> None:
     """Refuse to append to a log whose shape or identity scheme differs.
@@ -2392,6 +2429,10 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
         reader = csv.reader(fh)
         header = next(reader, None)
         if header is None:
+            # Empty file: nothing to compare against, and append_log will lay
+            # down the header on the next write. The two functions have to
+            # agree about what an empty file means, or a row lands where the
+            # header belongs.
             return
         schemes = set()
         if "id_scheme" in header:

@@ -70,6 +70,30 @@
   intent, independence behavior, refusal ordering, partial-write guarantees,
   scope, or egress.
 
+## Task 13 file list
+
+- Before: Task 13 listed only `scripts/record_verdict.py` and
+  `tests/test_record_verdict.py` under `Files`.
+- After: The list also names the required red-test evidence file and the
+  plan-fixes evidence file.
+- Why: The execution brief requires the Task 12 green-commit backfill, Task 13
+  RED evidence, and this plan-fixes entry in the task commit. This is an
+  unambiguous, local completeness correction and does not change the task
+  intent, log compatibility, independence, partial-write guarantees, scope, or
+  egress.
+
+## Task 13 empty-log invariant
+
+- Before: Task 13 allowed `check_log_compatible` to accept an empty file, while
+  `append_log` decided whether to write the header from `path.exists()` alone.
+- After: `append_log` treats only a non-empty existing file as having a header;
+  a zero-byte file receives exactly one `LOG_FIELDS` header before its first
+  row. A focused test and mutation run prove the control.
+- Why: A zero-byte file is not yet a log. The previous functions disagreed and
+  placed a data row where `csv.DictReader` expects column names, silently
+  corrupting the audit trail. The corrected invariant preserves the spec's
+  header-compatibility intent without changing policy or scope.
+
 ## Task 1 temp-tree lifecycle warning found during Task 12
 
 - Before: Task 1's `temp_tree` docstring explained fixture materialisation but
