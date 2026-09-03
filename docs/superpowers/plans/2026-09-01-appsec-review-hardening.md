@@ -475,7 +475,7 @@ def build_triage_packet(
             {
               "physicalLocation": {
                 "artifactLocation": { "uri": "app/handler.py" },
-                "region": { "startLine": 4, "endLine": 4 }
+                "region": { "startLine": 5, "endLine": 5 }
               }
             }
           ]
@@ -1701,6 +1701,23 @@ class TestFindingIdentity(unittest.TestCase):
                     fixture_exclusions(),
                 )
 
+    def test_excluded_path_refuses_even_with_a_fingerprint(self):
+        # The fingerprint path needs no file, so nothing would be leaked. It is
+        # still refused: an id for a finding that can never become a packet is
+        # a loose end, and the listing promises (no id) for excluded paths.
+        with temp_tree({}) as repo:
+            with self.assertRaises(check_scope.ScopeViolation):
+                build_packet.compute_finding_id(
+                    result_at(
+                        path="secrets/prod.env",
+                        start=1,
+                        end=1,
+                        partialFingerprints={"semgrep.fingerprint": "deadbeef"},
+                    ),
+                    repo,
+                    fixture_exclusions(),
+                )
+
     def test_empty_region_is_reported_clearly(self):
         with temp_tree({"app/handler.py": "\n\n\n"}) as repo:
             with self.assertRaises(ValueError):
@@ -1796,18 +1813,20 @@ def compute_finding_id(
     fragments precede it, so reordering identical fragments within one file
     swaps their ids.
 
-    On the content path this reads the source file, so the caller must be
-    prepared for ScopeViolation. Deriving an id for an excluded file would mean
-    reading a file the policy forbids.
+    Raises ScopeViolation for an excluded path, before either identity path
+    runs. The content path would otherwise read a file the policy forbids, and
+    the fingerprint path — which needs no file — would hand back an id for a
+    finding that can never be turned into a packet. One rule for both keeps the
+    control uniform and the listing honest.
     """
     rule_id = result["rule_id"]
     path = result["file"]
 
+    check_path(path, exclusions)
+
     fingerprint = scanner_fingerprint(result)
     if fingerprint:
         return _digest(f"{rule_id}:{path}:{fingerprint}")
-
-    check_path(path, exclusions)
 
     target_file = repo / path
     if not target_file.exists():
@@ -2057,13 +2076,30 @@ class TestIndependenceControl(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("F-stale", ids)
 
-    def test_distinct_models_are_accepted(self):
+    def test_single_model_run_without_challenge_is_accepted(self):
+        # severity=low needs no challenge, so one model is legitimate here.
         with temp_tree({"placeholder": ""}) as root:
             self.setup_files(root)
             proc = self.run_recorder(
                 [
                     "--verdict", str(root / "verdict.json"),
                     "--agent", "model-a",
+                    "--sarif-out", str(root / "reviewed.sarif"),
+                    "--log", str(root / "triage-log.csv"),
+                ],
+                root,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_distinct_models_are_accepted(self):
+        with temp_tree({"placeholder": ""}) as root:
+            self.setup_files(root)
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--challenge", str(root / "challenge.json"),
+                    "--agent", "model-a",
+                    "--validator", "model-b",
                     "--sarif-out", str(root / "reviewed.sarif"),
                     "--log", str(root / "triage-log.csv"),
                 ],
@@ -2425,6 +2461,11 @@ class TestScanScript(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("REFUSED", proc.stderr)
 
+    def test_refusal_leaves_no_state_behind(self):
+        with temp_tree({"rules/README.md": "placeholder\n"}) as root:
+            self.run_scan(root, str(root / "rules"))
+            self.assertFalse((root / "findings").exists())
+
     def test_telemetry_is_disabled_unconditionally(self):
         self.assertIn("--metrics=off", SCAN.read_text(encoding="utf-8"))
 
@@ -2462,10 +2503,10 @@ repo="${1:-.}"
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 config="${SEMGREP_CONFIG:-$root/rules}"
 
-mkdir -p findings
-
 # Resolution happens before semgrep is invoked so the refusal path works on a
-# machine without semgrep, and so it can be tested there too.
+# machine without semgrep, and so it can be tested there too. Nothing is
+# created on disk until the configuration is known to be usable: a refusal
+# that leaves state behind is not a clean refusal.
 case "$config" in
   p/*|r/*|https://*)
     printf 'NETWORK: fetching rules from the Semgrep registry (%s).\n' "$config" >&2
@@ -2483,6 +2524,8 @@ case "$config" in
     fi
     ;;
 esac
+
+mkdir -p findings
 
 printf 'Rules:  %s\n' "$config"
 printf 'Target: %s\n\n' "$repo"
@@ -2779,7 +2822,12 @@ from check_scope import (  # noqa: E402
             print(json.dumps(shown, indent=2))
             return 0
 
-        reviewed = len(reviewed_finding_ids(args.verdicts))
+        # "already reviewed" must be a subset of what this SARIF contains.
+        # Counting every file in the verdict directory would fold in findings
+        # from other scans and report a number nobody can reconcile.
+        on_disk = reviewed_finding_ids(args.verdicts)
+        present = {i["finding_id"] for i in items if i["finding_id"]}
+        reviewed = len(present & on_disk)
         print(f"{len(results)} finding(s) in SARIF, {reviewed} already reviewed, "
               f"{len(shown)} shown\n")
         for i, item in enumerate(shown):
