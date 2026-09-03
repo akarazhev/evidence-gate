@@ -96,6 +96,13 @@ def _matches(path: str, pattern: str) -> bool:
     A trailing slash means "this directory and everything under it". A pattern
     without a slash matches at any depth, mirroring gitignore behaviour, so
     `**/.env` and `.env` both catch a nested file.
+
+    Matching is case-insensitive and platform-independent. macOS APFS and
+    Windows NTFS are case-insensitive by default, so `.ENV` names the same file
+    as `.env`; a case-sensitive glob would let the second spelling walk past
+    every dotfile exclusion. fnmatch.fnmatch is not an option here because it
+    defers to os.path.normcase, which makes the answer depend on the operating
+    system the reviewer happens to be using.
     """
     # Strip a leading "./" as a prefix, not as a character set. lstrip("./")
     # would eat the leading dot of a dotfile and turn ".env" into "env",
@@ -103,7 +110,8 @@ def _matches(path: str, pattern: str) -> bool:
     norm = path.replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
-    norm = norm.lstrip("/")
+    norm = norm.lstrip("/").lower()
+    pattern = pattern.lower()
 
     if pattern.endswith("/"):
         prefix = pattern.rstrip("/")
@@ -114,13 +122,13 @@ def _matches(path: str, pattern: str) -> bool:
             or norm.startswith(cleaned + "/")
         )
 
-    if fnmatch.fnmatch(norm, pattern):
+    if fnmatch.fnmatchcase(norm, pattern):
         return True
     # `**/x` should also match a top-level `x`
-    if pattern.startswith("**/") and fnmatch.fnmatch(norm, pattern[3:]):
+    if pattern.startswith("**/") and fnmatch.fnmatchcase(norm, pattern[3:]):
         return True
     # A bare pattern matches at any depth
-    if "/" not in pattern and fnmatch.fnmatch(Path(norm).name, pattern):
+    if "/" not in pattern and fnmatch.fnmatchcase(Path(norm).name, pattern):
         return True
     return False
 

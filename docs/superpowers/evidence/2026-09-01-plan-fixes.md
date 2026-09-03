@@ -34,3 +34,14 @@
   raises `ValidationError` before accessing object members.
 - Why: This is an unambiguous local validation-boundary correction. It preserves
   the fallback's refusal behavior, scope, partial-write guarantees, and egress.
+
+## Task 10 file list
+
+- Before: Task 10 listed only `scripts/check_scope.py` and
+  `policy/excluded-paths.yml` under `Files`.
+- After: The list also names the required red-test evidence file and the
+  plan-fixes evidence file.
+- Why: The execution brief requires both artifacts in this task commit. This is
+  an unambiguous, local completeness correction and does not change the task
+  intent, platform-independent matching behavior, scope, independence,
+  partial-write guarantees, or egress.

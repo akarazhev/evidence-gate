@@ -1527,6 +1527,8 @@ git commit -m "fix: close type and array gaps in the fallback validator"
 **Files:**
 - Modify: `scripts/check_scope.py:93-125`
 - Modify: `policy/excluded-paths.yml`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: красные тесты из Task 3.

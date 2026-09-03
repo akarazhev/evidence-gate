@@ -5,6 +5,9 @@ exclusions:
   - pattern: "**/.env.*"
     owner: appsec
     reason: Runtime secrets
+  - pattern: "**/.envrc"
+    owner: appsec
+    reason: direnv environment, commonly holds secrets
   - pattern: "**/id_rsa"
     owner: appsec
     reason: Private key material
