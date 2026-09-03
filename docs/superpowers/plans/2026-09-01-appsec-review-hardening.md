@@ -1300,6 +1300,8 @@ git commit -m "fix: accumulate reviewed SARIF instead of overwriting per finding
 **Files:**
 - Modify: `scripts/record_verdict.py:71-113`
 - Modify: `tests/test_record_verdict.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `record_verdict._fallback_validate`, `record_verdict.ValidationError`.
@@ -1377,6 +1379,12 @@ class TestFallbackValidator(unittest.TestCase):
                 {"x": 1}, {"properties": {"x": {"type": "int64"}}}, "fixture"
             )
 
+    def test_top_level_non_object_is_reported_not_crashed(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            record_verdict._fallback_validate(
+                [], {"type": "object", "properties": {}}, "fixture"
+            )
+
 
 class TestSchemaDriftGuard(unittest.TestCase):
     """check_consistency compensates for the two conditional rules the
@@ -1407,7 +1415,7 @@ class TestSchemaDriftGuard(unittest.TestCase):
 - [ ] **Step 2: Прогнать**
 
 Run: `python3 -m unittest tests.test_record_verdict.TestFallbackValidator -v`
-Expected: FAIL в `test_boolean_is_not_an_integer`, `test_array_items_are_validated`, `test_scalar_array_items_are_type_checked`, `test_unknown_schema_type_is_reported_not_crashed`.
+Expected: FAIL в `test_boolean_is_not_an_integer`, `test_array_items_are_validated`, `test_scalar_array_items_are_type_checked`, `test_unknown_schema_type_is_reported_not_crashed`, `test_top_level_non_object_is_reported_not_crashed`.
 
 - [ ] **Step 3: Вынести таблицу типов и проверку**
 
@@ -1453,6 +1461,9 @@ def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
     relies on are enforced separately by check_consistency, and a test guards
     against the schema growing a third.
     """
+    if not isinstance(instance, dict):
+        raise ValidationError(f"{name}: expected an object")
+
     for key in schema.get("required", []):
         if key not in instance:
             raise ValidationError(f"{name}: missing required field {key!r}")

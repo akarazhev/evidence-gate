@@ -68,12 +68,43 @@ def validate(instance: dict, schema_name: str) -> None:
         raise ValidationError(f"{schema_name}: {exc}") from exc
 
 
-def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
-    """Minimal validator covering required keys, enums, and types.
+_JSON_TYPES = {
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+    "null": type(None),
+}
 
-    Not a full draft-07 implementation. It exists so that a missing jsonschema
-    package degrades the check rather than removing it.
+
+def _type_ok(value, expected) -> bool:
+    """JSON-schema type check with Python's bool/int overlap accounted for."""
+    names = expected if isinstance(expected, list) else [expected]
+    for name_ in names:
+        if name_ not in _JSON_TYPES:
+            raise ValidationError(f"schema uses unknown type {name_!r}")
+        # bool is a subclass of int, so True would satisfy "integer" and
+        # "number" without this guard.
+        if name_ in ("integer", "number") and isinstance(value, bool):
+            continue
+        if isinstance(value, _JSON_TYPES[name_]):
+            return True
+    return False
+
+
+def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
+    """Minimal validator covering required keys, enums, types and array items.
+
+    Not a full draft-07 implementation: `allOf`, `oneOf`, `$ref` and pattern
+    matching are out of scope. The two conditional rules the verdict schema
+    relies on are enforced separately by check_consistency, and a test guards
+    against the schema growing a third.
     """
+    if not isinstance(instance, dict):
+        raise ValidationError(f"{name}: expected an object")
+
     for key in schema.get("required", []):
         if key not in instance:
             raise ValidationError(f"{name}: missing required field {key!r}")
@@ -85,31 +116,37 @@ def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
             if schema.get("additionalProperties") is False:
                 raise ValidationError(f"{name}: unexpected field {key!r}")
             continue
+
         if "enum" in spec and value not in spec["enum"]:
+            raise ValidationError(f"{name}: {key}={value!r} not in {spec['enum']}")
+
+        if "type" in spec and not _type_ok(value, spec["type"]):
             raise ValidationError(
-                f"{name}: {key}={value!r} not in {spec['enum']}"
+                f"{name}: {key} should be {spec['type']}, got {type(value).__name__}"
             )
-        expected = spec.get("type")
-        if expected:
-            types = expected if isinstance(expected, list) else [expected]
-            py = {
-                "string": str, "integer": int, "number": (int, float),
-                "boolean": bool, "array": list, "object": dict, "null": type(None),
-            }
-            allowed = tuple(
-                t for name_ in types for t in ((py[name_],) if not isinstance(py[name_], tuple) else py[name_])
-            )
-            if not isinstance(value, allowed):
-                raise ValidationError(
-                    f"{name}: {key} should be {expected}, got {type(value).__name__}"
-                )
+
         if spec.get("minLength") and isinstance(value, str):
             if len(value) < spec["minLength"]:
                 raise ValidationError(
                     f"{name}: {key} shorter than {spec['minLength']} chars"
                 )
+
         if isinstance(value, dict) and spec.get("properties"):
             _fallback_validate(value, spec, f"{name}.{key}")
+
+        if isinstance(value, list) and isinstance(spec.get("items"), dict):
+            item_spec = spec["items"]
+            for index, item in enumerate(value):
+                label = f"{name}.{key}[{index}]"
+                if item_spec.get("properties") or item_spec.get("required"):
+                    if not isinstance(item, dict):
+                        raise ValidationError(f"{label}: expected an object")
+                    _fallback_validate(item, item_spec, label)
+                elif "type" in item_spec and not _type_ok(item, item_spec["type"]):
+                    raise ValidationError(
+                        f"{label}: should be {item_spec['type']}, "
+                        f"got {type(item).__name__}"
+                    )
 
 
 def check_consistency(verdict: dict) -> list[str]:

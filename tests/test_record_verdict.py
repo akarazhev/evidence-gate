@@ -220,5 +220,105 @@ class TestSarifAccumulation(unittest.TestCase):
             self.assertEqual(len(record_verdict.load_existing_results(path)), 1)
 
 
+class TestFallbackValidator(unittest.TestCase):
+    """The fallback exists so a missing jsonschema degrades the check rather
+    than removing it. It degraded further than advertised."""
+
+    SCHEMA = {
+        "required": ["name"],
+        "additionalProperties": False,
+        "properties": {
+            "name": {"type": "string", "minLength": 2},
+            "count": {"type": "integer"},
+            "mode": {"type": "string", "enum": ["a", "b"]},
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["file"],
+                    "properties": {"file": {"type": "string"}},
+                },
+            },
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+    def validate(self, instance):
+        record_verdict._fallback_validate(instance, self.SCHEMA, "fixture")
+
+    def test_missing_required_field(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({})
+
+    def test_unknown_field_when_additional_properties_false(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({"name": "ok", "surprise": 1})
+
+    def test_enum_is_enforced(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({"name": "ok", "mode": "c"})
+
+    def test_min_length_is_enforced(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({"name": "x"})
+
+    def test_valid_instance_passes(self):
+        self.validate({"name": "ok", "count": 3, "mode": "a", "tags": ["x"]})
+
+    # --- Gaps closed by this task -----------------------------------------
+
+    def test_boolean_is_not_an_integer(self):
+        # bool subclasses int in Python, so isinstance(True, int) is True and
+        # `"count": True` slipped through as a valid integer.
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({"name": "ok", "count": True})
+
+    def test_array_items_are_validated(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({"name": "ok", "steps": [{"line": 3}]})
+
+    def test_scalar_array_items_are_type_checked(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate({"name": "ok", "tags": [1]})
+
+    def test_unknown_schema_type_is_reported_not_crashed(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            record_verdict._fallback_validate(
+                {"x": 1}, {"properties": {"x": {"type": "int64"}}}, "fixture"
+            )
+
+    def test_top_level_non_object_is_reported_not_crashed(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            record_verdict._fallback_validate(
+                [], {"type": "object", "properties": {}}, "fixture"
+            )
+
+
+class TestSchemaDriftGuard(unittest.TestCase):
+    """check_consistency compensates for the two conditional rules the
+    fallback validator cannot express. If the schema grows a third, this test
+    fails and forces someone to decide whether to mirror it."""
+
+    def test_schema_has_exactly_the_conditionals_we_mirror(self):
+        schema = json.loads(
+            (record_verdict.SCHEMA_DIR / "verdict.schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(schema["allOf"]), 2)
+
+    def test_high_confidence_conditional_is_mirrored(self):
+        self.assertTrue(
+            record_verdict.check_consistency(
+                make_verdict(confidence="high", evidence_level="partial")
+            )
+        )
+
+    def test_pattern_verdict_conditional_is_mirrored(self):
+        self.assertTrue(
+            record_verdict.check_consistency(
+                make_verdict(evidence_level="pattern", verdict="true_positive")
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
