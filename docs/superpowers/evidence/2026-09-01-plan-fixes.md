@@ -128,3 +128,16 @@
   is an unambiguous local completeness correction and does not change the
   task's offline-default, refusal ordering, partial-write, scope, or egress
   behavior.
+
+## Task 14 correction found in review
+
+- Before: The scanner tests relied on a stripped `PATH` and assumed that this
+  proved Semgrep was absent before exercising the registry branch.
+- After: `run_scan` accepts an optional `bindir`; `make_fake_semgrep` installs
+  an executable stand-in that records the actual argv and exits 42. The local
+  and registry branches now assert their behavioral config and telemetry
+  arguments through that stand-in.
+- Why: A package-managed system Semgrep could still be found in `/usr/bin`,
+  causing a real scan and possible network access. The fake makes both branches
+  hermetic and behaviorally proves the config/telemetry arguments without
+  changing production behavior or task scope.
