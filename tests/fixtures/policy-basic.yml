@@ -1,0 +1,16 @@
+# Fixture policy. Deliberately small and independent of policy/excluded-paths.yml
+# so that editing the real policy cannot break the test suite.
+exclusions:
+  - pattern: "**/.env"
+    owner: appsec
+    reason: Runtime secrets
+  - pattern: "**/*.pem"
+    owner: appsec
+    reason: Certificate or key material
+  - pattern: "secrets/"          # trailing slash means the whole directory
+    owner: appsec
+    reason: Secret material
+
+scan_noise:
+  - "node_modules/"
+  - "dist/"

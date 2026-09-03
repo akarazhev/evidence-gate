@@ -1,4 +1,4 @@
-.PHONY: help install scan list triage validate record metrics goldenset import clean check-scope
+.PHONY: help install scan list triage validate record metrics goldenset import clean check-scope test
 
 REPO    ?= .
 SARIF   ?= findings/raw.sarif
@@ -19,6 +19,7 @@ help:
 	@echo "  make goldenset            regression bench"
 	@echo "  make import ENGAGEMENT=42 upload to DefectDojo"
 	@echo "  make check-scope          print the active exclusion policy"
+	@echo "  make test                 run the test suite (stdlib only)"
 	@echo ""
 	@echo "Read docs/03-data-handling.md before first use."
 
@@ -58,6 +59,9 @@ import:
 
 check-scope:
 	@python3 scripts/check_scope.py --list
+
+test:
+	@python3 -m unittest discover -s tests -t . -v
 
 clean:
 	rm -rf findings/packets findings/reviewed.sarif
