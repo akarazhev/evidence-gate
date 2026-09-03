@@ -20,6 +20,9 @@ exclusions:
   - pattern: "**/*.key"
     owner: appsec
     reason: Key material
+  - pattern: "secrets/"
+    owner: appsec
+    reason: Conventional directory for secret material; matches at any depth
   - pattern: ".git/"
     owner: appsec
     reason: Repository history and remotes are out of packet scope
