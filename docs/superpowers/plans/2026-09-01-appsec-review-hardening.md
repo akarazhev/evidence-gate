@@ -3275,6 +3275,25 @@ class TestDecisionRecording(unittest.TestCase):
         self.assertEqual(rows[-1]["human_decision_by"], "appsec-oncall")
         self.assertEqual(rows[-1]["finding_id"], "F-000000000001")
 
+    def test_malformed_sarif_refuses_and_leaves_the_log_untouched(self):
+        # Regression for the ordering fix: the SARIF is parsed before anything
+        # is written, because the triage log is append-only and a row added
+        # ahead of a SARIF failure could never be withdrawn.
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            write_log(log, [verdict_row()])
+            sarif.write_text("{ not json", encoding="utf-8")
+            before = log.read_text(encoding="utf-8")
+            proc = self.run_script([
+                "--finding-id", "F-000000000001", "--decision", "accepted",
+                "--by", "appsec-oncall", "--log", str(log), "--sarif", str(sarif),
+            ])
+            after = log.read_text(encoding="utf-8")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("SARIF ERROR", proc.stderr)
+        self.assertEqual(before, after, "a refused run must not append to the log")
+
     def test_sarif_properties_are_updated(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
