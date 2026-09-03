@@ -149,6 +149,20 @@ def check_consistency(verdict: dict) -> list[str]:
     return problems
 
 
+def _unchallenged_note(verdict_label: str, severity: str) -> str:
+    """Rationale for a finding that policy exempts from adversarial validation.
+
+    Deliberately distinct from the challenged wording. Only critical, high and
+    medium require a challenge; reporting a low finding as "upheld under
+    adversarial validation" would write a false statement into reviewed.sarif
+    and the triage log, where it outlives everyone who remembers the context.
+    """
+    return (
+        f"{verdict_label}; severity={severity} does not require adversarial "
+        "validation under policy"
+    )
+
+
 def decide_state(verdict: dict, challenge: dict | None) -> tuple[str, str]:
     """Apply the promotion rules. Returns (state, rationale)."""
     v = verdict["verdict"]
@@ -179,11 +193,15 @@ def decide_state(verdict: dict, challenge: dict | None) -> tuple[str, str]:
             )
         if verdict.get("evidence_level") == "pattern":
             return ("human_review", "pattern-level evidence is insufficient to confirm")
-        return ("confirmed", "true positive upheld under adversarial validation")
+        if challenge_result == "upheld":
+            return ("confirmed", "true positive upheld under adversarial validation")
+        return ("confirmed", _unchallenged_note("true positive", severity))
 
     if v == "false_positive":
-        if challenge_result == "upheld" or not needs_challenge:
+        if challenge_result == "upheld":
             return ("dismissed", "false positive upheld")
+        if not needs_challenge:
+            return ("dismissed", _unchallenged_note("false positive", severity))
         return ("human_review", "dismissal not independently validated")
 
     return ("human_review", "verdict was needs_human")
