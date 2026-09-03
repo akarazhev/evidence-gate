@@ -335,6 +335,8 @@ git commit -m "test: cover the hand-rolled policy parser"
 
 **Files:**
 - Modify: `tests/test_check_scope.py`
+- Create: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Create: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `check_scope._matches`, `check_scope.check_path`, `check_scope.ScopeViolation`.

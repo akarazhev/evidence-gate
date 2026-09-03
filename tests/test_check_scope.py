@@ -47,5 +47,57 @@ class TestParsePolicy(unittest.TestCase):
         self.assertEqual([r["pattern"] for r in exclusions], ["**/id_rsa"])
 
 
+class TestMatches(unittest.TestCase):
+    def setUp(self):
+        self.exclusions = check_scope.load_policy(FIXTURES / "policy-basic.yml")[0]
+
+    def assertRefused(self, path):
+        with self.assertRaises(check_scope.ScopeViolation):
+            check_scope.check_path(path, self.exclusions)
+
+    def assertAllowed(self, path):
+        check_scope.check_path(path, self.exclusions)
+
+    def test_dotfile_at_root(self):
+        self.assertRefused(".env")
+
+    def test_dotfile_nested(self):
+        self.assertRefused("services/api/.env")
+
+    def test_dot_slash_prefix_is_stripped_not_lstripped(self):
+        # lstrip("./") would eat the leading dot and turn ".env" into "env",
+        # defeating every dotfile exclusion in the policy.
+        self.assertRefused("./.env")
+
+    def test_extension_glob_at_root_and_at_depth(self):
+        self.assertRefused("server.pem")
+        self.assertRefused("certs/intermediate/server.pem")
+
+    def test_directory_pattern_covers_contents(self):
+        self.assertRefused("secrets/token.txt")
+        self.assertRefused("app/secrets/token.txt")
+
+    def test_windows_separators_are_normalised(self):
+        self.assertRefused("services\\api\\.env")
+
+    def test_similar_names_are_not_refused(self):
+        self.assertAllowed("src/environment.py")
+        self.assertAllowed("docs/env-setup.md")
+        self.assertAllowed("src/secretsmanager.py")
+
+    # --- Red until Task 10 -------------------------------------------------
+    # macOS APFS and Windows NTFS are case-insensitive by default, so `.ENV`
+    # and `.env` name the same file with the same contents. fnmatch.fnmatch
+    # delegates to os.path.normcase, which is the identity on POSIX, so the
+    # glob is case-sensitive there and the second spelling walks straight past
+    # the exclusion.
+
+    def test_uppercase_dotfile_is_refused(self):
+        self.assertRefused(".ENV")
+
+    def test_mixed_case_extension_is_refused(self):
+        self.assertRefused("certs/Server.PEM")
+
+
 if __name__ == "__main__":
     unittest.main()
