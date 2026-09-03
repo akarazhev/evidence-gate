@@ -641,6 +641,8 @@ git commit -m "test: prove scope check precedes file reads; inject exclusions fo
 
 **Files:**
 - Create: `tests/test_record_verdict.py`
+- Update: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Update: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `record_verdict.check_consistency`, `record_verdict.decide_state`.
