@@ -379,6 +379,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sarif", type=Path, help="SARIF input")
     parser.add_argument("--index", type=int, help="Finding index from --list")
+    parser.add_argument(
+        "--finding-id", help="Address a finding by id; survives filter changes"
+    )
     parser.add_argument("--list", action="store_true", help="List findings")
     parser.add_argument("--challenge", action="store_true", help="Build a challenge packet")
     parser.add_argument("--verdict", type=Path, help="Verdict JSON for --challenge")
@@ -401,6 +404,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.finding_id and args.index is not None:
+        parser.error("pass either --finding-id or --index, not both")
+
     if args.challenge:
         if not args.verdict:
             parser.error("--challenge requires --verdict")
@@ -422,7 +428,7 @@ def main() -> int:
 
     results = load_sarif_results(args.sarif)
 
-    if args.list or args.index is None:
+    if args.list or (args.index is None and not args.finding_id):
         exclusions, _ = load_policy()
         items = annotate(results, args.repo, exclusions)
         shown = apply_filters(
@@ -479,13 +485,29 @@ def main() -> int:
         print(f"No findings in {args.sarif}. Run `make scan` first.", file=sys.stderr)
         return 1
 
-    if not 0 <= args.index < len(shown):
-        print(f"Index out of range (0..{len(shown) - 1})", file=sys.stderr)
-        return 1
+    if args.finding_id:
+        matching = [item for item in items if item["finding_id"] == args.finding_id]
+        if not matching:
+            print(
+                f"No finding with id {args.finding_id} in {args.sarif}.",
+                file=sys.stderr,
+            )
+            print(
+                "Run --list to see the current ids. An id changes only when "
+                "the flagged code itself changes.",
+                file=sys.stderr,
+            )
+            return 1
+        chosen = matching[0]
+    else:
+        if not 0 <= args.index < len(shown):
+            print(f"Index out of range (0..{len(shown) - 1})", file=sys.stderr)
+            return 1
+        chosen = shown[args.index]
 
     try:
         packet = build_triage_packet(
-            shown[args.index], args.repo, args.context_lines, exclusions
+            chosen, args.repo, args.context_lines, exclusions
         )
     except ScopeViolation as exc:
         print("REFUSED: finding touches an excluded path.\n", file=sys.stderr)

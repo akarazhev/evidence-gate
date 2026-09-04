@@ -6,6 +6,7 @@ the data-handling story true.
 """
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -359,6 +360,119 @@ class TestTriageQueue(unittest.TestCase):
         self.assertEqual(
             proc.stderr,
             f"No findings in {sarif}. Run `make scan` first.\n",
+        )
+
+
+class TestFindingIdAddressing(unittest.TestCase):
+    def run_builder(self, args):
+        return subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "build_packet.py"), *args],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_unknown_id_is_reported_and_non_zero(self):
+        proc = self.run_builder(
+            ["--sarif", str(SARIF), "--finding-id", "F-doesnotexist"]
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("No finding with id F-doesnotexist", proc.stderr)
+
+    def test_id_and_index_together_are_refused(self):
+        proc = self.run_builder(
+            ["--sarif", str(SARIF), "--finding-id", "F-x", "--index", "0"]
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("pass either --finding-id or --index, not both", proc.stderr)
+
+    def test_make_list_passes_path_glob_as_one_literal_argument(self):
+        recorder = (
+            "import json\n"
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['ARGV_FILE']).write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        with temp_tree(
+            {
+                "app/one.py": "\n",
+                "app/two.py": "\n",
+                "scripts/build_packet.py": recorder,
+            }
+        ) as root:
+            argv_path = root / "argv.json"
+            env = {**os.environ, "ARGV_FILE": str(argv_path)}
+            proc = subprocess.run(
+                [
+                    "make",
+                    "-f",
+                    str(REPO_ROOT / "Makefile"),
+                    "list",
+                    "SARIF=input.sarif",
+                    "PATH_GLOB=app/*.py",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(
+                json.loads(argv_path.read_text(encoding="utf-8")),
+                ["--sarif", "input.sarif", "--list", "--path", "app/*.py"],
+            )
+
+    def test_finding_id_ignores_list_filters_when_building_packet(self):
+        finding_id = "F-933b5ec77e80"
+        sarif = {
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "tool": {"driver": {"name": "fixture", "rules": []}},
+                    "results": [
+                        {
+                            "ruleId": "demo.rule",
+                            "level": "warning",
+                            "message": {"text": "fixture finding"},
+                            "locations": [
+                                {
+                                    "physicalLocation": {
+                                        "artifactLocation": {"uri": "app/target.py"},
+                                        "region": {"startLine": 2, "endLine": 2},
+                                    }
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        with temp_tree({"app/target.py": "# setup\ndanger(user)\n"}) as root:
+            sarif_path = root / "input.sarif"
+            out = root / "packets"
+            sarif_path.write_text(json.dumps(sarif), encoding="utf-8")
+            proc = self.run_builder(
+                [
+                    "--sarif",
+                    str(sarif_path),
+                    "--repo",
+                    str(root),
+                    "--out",
+                    str(out),
+                    "--finding-id",
+                    finding_id,
+                    "--level",
+                    "error",
+                    "--limit",
+                    "0",
+                ]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            packet = json.loads((out / f"{finding_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual(packet["finding_id"], finding_id)
+        self.assertEqual(
+            packet["location"],
+            {"file": "app/target.py", "start_line": 2, "end_line": 2},
         )
 
 

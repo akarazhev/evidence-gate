@@ -180,3 +180,36 @@
 - Why: The corrected queue-output contract is unambiguous and leaves JSON,
   identity, scope, filtering, empty queues, independence, partial-write
   behavior, policy, and egress unchanged.
+
+## Task 16 file list, RED assertions, and output expectation
+
+- Before: Task 16 omitted this plan-fixes file from its Files list; its two
+  prescribed failure assertions also passed on argparse's unsupported-option
+  error, and Step 5 still expected the tally in the header and id guidance
+  below the list.
+- After: The Files list includes this evidence file; the tests require the
+  feature-specific unknown-id and mutual-exclusion messages; and Step 5 expects
+  index guidance in the header with the tally as the final output.
+- Why: The first test form could not produce the required genuine RED because
+  argparse independently met its non-zero and argument-echo assertions. The
+  current output order is the authoritative Task 15 contract. These are
+  unambiguous local test, documentation, and file-list corrections that do not
+  alter the intended id-addressing behavior or any control.
+
+## Task 16 review fix round 1: path-glob quoting and filtered-ID coverage
+
+- Before: The `make list` recipe passed `$(PATH_GLOB)` unquoted, allowing the
+  invoking shell to expand one requested glob into multiple concrete arguments.
+  Task 16 also lacked a Make-level argv regression and positive proof that ID
+  selection remains independent of filters that empty `shown`; Step 6 omitted
+  the plan and plan-fixes files it already required.
+- After: The recipe uses `--path "$(PATH_GLOB)"`; Step 1 describes a temporary
+  cwd/argv-recorder regression with two matching files and a hand-derived-ID
+  packet test under `--level error --limit 0`; and Step 6 stages the plan and
+  plan-fixes files.
+- Why: Shell glob expansion changes the CLI argument boundary and can corrupt
+  the requested filter. The new regression proves the Make-to-CLI boundary,
+  while the characterization test documents the intended filter-independent ID
+  path without changing it. These are local corrections that preserve scope,
+  identity, empty-queue, JSON, output-order, partial-write, policy, and egress
+  controls.

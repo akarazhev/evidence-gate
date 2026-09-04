@@ -12,7 +12,9 @@ help:
 	@echo "  make install              install deterministic tooling"
 	@echo "  make scan REPO=../myapp   run scanners, produce SARIF"
 	@echo "  make list                 list findings with scope status"
+	@echo "  make list LEVEL=error UNREVIEWED=1   filtered triage queue"
 	@echo "  make triage N=3           build a review packet for finding 3"
+	@echo "  make triage ID=F-abc      build a packet by finding id"
 	@echo "  make validate ID=F-abc    build the adversarial challenge packet"
 	@echo "  make record ID=F-abc AGENT=<model> VALIDATOR=<model> MINUTES=12"
 	@echo "  make metrics              programme health"
@@ -31,10 +33,16 @@ scan:
 	./scripts/scan.sh $(REPO)
 
 list:
-	@python3 scripts/build_packet.py --sarif $(SARIF) --list
+	@python3 scripts/build_packet.py --sarif $(SARIF) --list \
+		$(if $(LEVEL),--level $(LEVEL),) \
+		$(if $(RULE),--rule $(RULE),) \
+		$(if $(PATH_GLOB),--path "$(PATH_GLOB)",) \
+		$(if $(UNREVIEWED),--unreviewed,) \
+		$(if $(LIMIT),--limit $(LIMIT),)
 
 triage:
-	@python3 scripts/build_packet.py --sarif $(SARIF) --index $(N) --repo $(REPO)
+	@python3 scripts/build_packet.py --sarif $(SARIF) --repo $(REPO) \
+		$(if $(ID),--finding-id $(ID),--index $(N))
 
 validate:
 	@test -n "$(ID)" || (echo "Set ID=<finding-id>" && exit 1)

@@ -3116,6 +3116,7 @@ git commit -m "feat: filter the triage queue by level, rule, path and review sta
 - Modify: `scripts/build_packet.py:200-280`
 - Modify: `Makefile`
 - Modify: `tests/test_build_packet.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Consumes: `build_packet.annotate`.
@@ -3137,21 +3138,33 @@ class TestFindingIdAddressing(unittest.TestCase):
             ["--sarif", str(SARIF), "--finding-id", "F-doesnotexist"]
         )
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("F-doesnotexist", proc.stderr)
+        self.assertIn("No finding with id F-doesnotexist", proc.stderr)
 
     def test_id_and_index_together_are_refused(self):
         proc = self.run_builder(
             ["--sarif", str(SARIF), "--finding-id", "F-x", "--index", "0"]
         )
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("pass either --finding-id or --index, not both", proc.stderr)
 ```
 
 (`subprocess`, `sys` и `REPO_ROOT` уже импортированы в Task 15.)
 
+Review correction: also add a Make-level regression that runs the real
+`Makefile` from a temporary cwd containing two matching `app/*.py` files and a
+temporary `scripts/build_packet.py` argv recorder. Assert that `make list
+PATH_GLOB=app/*.py` supplies exactly one literal `app/*.py` value after
+`--path`; this is red until the recipe quotes the value. Add a positive CLI
+test with a hand-derived fixture id, a temporary source and output directory,
+and `--level error --limit 0`; it must still build and write the identified
+packet even though the filters make `shown` empty. This is characterization
+coverage for existing filter-independent id selection and should pass before
+the Makefile correction.
+
 - [ ] **Step 2: Прогнать**
 
 Run: `python3 -m unittest tests.test_build_packet.TestFindingIdAddressing -v`
-Expected: FAIL — аргумент неизвестен.
+Expected: FAIL — feature-specific id resolution and mutual-exclusion behavior are unavailable.
 
 - [ ] **Step 3: Добавить аргумент и разрешение**
 
@@ -3202,7 +3215,7 @@ list:
 	@python3 scripts/build_packet.py --sarif $(SARIF) --list \
 		$(if $(LEVEL),--level $(LEVEL),) \
 		$(if $(RULE),--rule $(RULE),) \
-		$(if $(PATH_GLOB),--path $(PATH_GLOB),) \
+		$(if $(PATH_GLOB),--path "$(PATH_GLOB)",) \
 		$(if $(UNREVIEWED),--unreviewed,) \
 		$(if $(LIMIT),--limit $(LIMIT),)
 
@@ -3218,7 +3231,7 @@ triage:
 	@echo "  make triage ID=F-abc      build a packet by finding id"
 ```
 
-`PATH_GLOB`, а не `PATH`: `PATH` в make наследует переменную окружения и переопределять её нельзя.
+`PATH_GLOB`, а не `PATH`: `PATH` в make наследует переменную окружения и переопределять её нельзя. Quote `$(PATH_GLOB)` so the recipe passes one literal glob to the CLI instead of letting the shell expand it in the caller's cwd.
 
 - [ ] **Step 5: Прогнать**
 
@@ -3226,12 +3239,14 @@ Run: `make test`
 Expected: всё зелёное.
 
 Run: `make list SARIF=tests/fixtures/sample.sarif LEVEL=error`
-Expected: одна находка, сводка в шапке, подсказка про id внизу.
+Expected: одна находка, подсказка про индекс в шапке, сводка последней строкой вывода.
 
 - [ ] **Step 6: Коммит**
 
 ```bash
-git add scripts/build_packet.py tests/test_build_packet.py Makefile
+git add scripts/build_packet.py tests/test_build_packet.py Makefile \
+  docs/superpowers/plans/2026-09-01-appsec-review-hardening.md \
+  docs/superpowers/evidence/2026-09-01-plan-fixes.md
 git commit -m "feat: address findings by id so filters cannot change what N means"
 ```
 
