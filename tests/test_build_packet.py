@@ -285,6 +285,23 @@ class TestTriageQueue(unittest.TestCase):
         with temp_tree({}) as root:
             self.assertEqual(build_packet.reviewed_finding_ids(root / "nope"), set())
 
+    def test_index_caveat_leads_and_the_tally_ends_the_output(self):
+        # This block has been reordered twice. The order is a requirement, not
+        # a formatting preference, so it gets an assertion of its own.
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "build_packet.py"),
+                "--sarif", str(SARIF), "--list",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = [line for line in proc.stdout.splitlines() if line.strip()]
+        self.assertIn("Indices are positions", lines[0])
+        self.assertTrue(lines[-1].endswith("shown"), lines[-1])
+
     def test_json_output_is_machine_readable(self):
         proc = subprocess.run(
             [

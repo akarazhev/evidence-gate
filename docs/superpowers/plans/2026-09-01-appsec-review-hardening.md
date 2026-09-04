@@ -2832,6 +2832,23 @@ class TestTriageQueue(unittest.TestCase):
         with temp_tree({}) as root:
             self.assertEqual(build_packet.reviewed_finding_ids(root / "nope"), set())
 
+    def test_index_caveat_leads_and_the_tally_ends_the_output(self):
+        # This block has been reordered twice. The order is a requirement, not
+        # a formatting preference, so it gets an assertion of its own.
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "build_packet.py"),
+                "--sarif", str(SARIF), "--list",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+        self.assertIn("Indices are positions", lines[0])
+        self.assertTrue(lines[-1].endswith("shown"), lines[-1])
+
     def test_json_output_is_machine_readable(self):
         proc = subprocess.run(
             [
@@ -3026,6 +3043,13 @@ from check_scope import (  # noqa: E402
         # "already reviewed" must be a subset of what this SARIF contains.
         # Counting every file in the verdict directory would fold in findings
         # from other scans and report a number nobody can reconcile.
+        # How to read the list comes before the list. The reader needs the
+        # caveat about indices while looking at them, not after scrolling past
+        # everything they were meant to qualify.
+        print("Indices are positions in this filtered list and change when the")
+        print("filters change. Use the id for anything you want to reproduce:")
+        print("  make triage ID=<finding-id>   or   make triage N=<index>\n")
+
         for i, item in enumerate(shown):
             flag = "" if item["in_scope"] else "  [OUT OF SCOPE]"
             label = item["finding_id"] or "(no id)"
@@ -3033,19 +3057,16 @@ from check_scope import (  # noqa: E402
                   f"{item['file']}:{item['start_line']}{flag}")
             print(f"        {item['rule_id']}")
 
-        # Footer, not header: on a real repository the list is hundreds of
-        # lines, and a header scrolls away before the reader reaches the end.
-        # "already reviewed" is the intersection with this SARIF - counting
-        # every file in the verdict directory would fold in findings from other
-        # scans and report a number nobody can reconcile.
+        # The tally is the last thing printed, with nothing after it. On a real
+        # repository the list runs to hundreds of lines and anything above it
+        # scrolls away unread. "already reviewed" is the intersection with this
+        # SARIF: counting every file in the verdict directory would fold in
+        # findings from other scans and report a number nobody can reconcile.
         on_disk = reviewed_finding_ids(args.verdicts)
         present = {i["finding_id"] for i in items if i["finding_id"]}
         reviewed = len(present & on_disk)
         print(f"\n{len(results)} finding(s) in SARIF, {reviewed} already "
               f"reviewed, {len(shown)} shown")
-        print("\nIndices are positions in this filtered list and change when the")
-        print("filters change. Use the id for anything you want to reproduce:")
-        print("  make triage ID=<finding-id>   or   make triage N=<index>")
         return 0
 ```
 

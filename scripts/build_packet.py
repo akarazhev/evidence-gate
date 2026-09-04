@@ -438,6 +438,13 @@ def main() -> int:
             print(json.dumps(shown, indent=2))
             return 0
 
+        # How to read the list comes before the list. The reader needs the
+        # caveat about indices while looking at them, not after scrolling past
+        # everything they were meant to qualify.
+        print("Indices are positions in this filtered list and change when the")
+        print("filters change. Use the id for anything you want to reproduce:")
+        print("  make triage ID=<finding-id>   or   make triage N=<index>\n")
+
         for i, item in enumerate(shown):
             flag = "" if item["in_scope"] else "  [OUT OF SCOPE]"
             label = item["finding_id"] or "(no id)"
@@ -445,19 +452,16 @@ def main() -> int:
                   f"{item['file']}:{item['start_line']}{flag}")
             print(f"        {item['rule_id']}")
 
-        # Footer, not header: on a real repository the list is hundreds of
-        # lines, and a header scrolls away before the reader reaches the end.
-        # "already reviewed" is the intersection with this SARIF - counting
-        # every file in the verdict directory would fold in findings from other
-        # scans and report a number nobody can reconcile.
+        # The tally is the last thing printed, with nothing after it. On a real
+        # repository the list runs to hundreds of lines and anything above it
+        # scrolls away unread. "already reviewed" is the intersection with this
+        # SARIF: counting every file in the verdict directory would fold in
+        # findings from other scans and report a number nobody can reconcile.
         on_disk = reviewed_finding_ids(args.verdicts)
         present = {item["finding_id"] for item in items if item["finding_id"]}
         reviewed = len(present & on_disk)
         print(f"\n{len(results)} finding(s) in SARIF, {reviewed} already "
               f"reviewed, {len(shown)} shown")
-        print("\nIndices are positions in this filtered list and change when the")
-        print("filters change. Use the id for anything you want to reproduce:")
-        print("  make triage ID=<finding-id>   or   make triage N=<index>")
         return 0
 
     exclusions, _ = load_policy()

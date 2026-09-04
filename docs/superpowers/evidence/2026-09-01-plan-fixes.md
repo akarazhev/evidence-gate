@@ -168,3 +168,15 @@
 - Why: These are unambiguous queue-boundary and output-contract corrections.
   They do not change identity, scope ordering, independence, partial-write
   behavior, egress, policy, or the Task 16 id-addressing intent.
+
+## Task 15 output-order correction found in re-review
+
+- Before: The human list printed finding rows before index guidance and printed
+  the guidance after the tally, so a reader saw neither the caveat while using
+  an index nor the tally as the final output.
+- After: The human list prints index guidance before every row and prints the
+  tally last, with no later human-output line. A focused regression asserts
+  the first and final non-empty lines.
+- Why: The corrected queue-output contract is unambiguous and leaves JSON,
+  identity, scope, filtering, empty queues, independence, partial-write
+  behavior, policy, and egress unchanged.
