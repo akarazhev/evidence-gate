@@ -417,6 +417,144 @@ class TestLogCompatibility(unittest.TestCase):
         self.assertEqual(first_line, record_verdict.LOG_FIELDS)
 
 
+class TestVerdictRows(unittest.TestCase):
+    def test_verdict_rows_are_found(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [{
+                "finding_id": "F-000000000001",
+                "id_scheme": "content-v1",
+                "initial_verdict": "true_positive",
+                "reviewed_at": "2026-09-01T10:00:00+00:00",
+            }, {
+                "finding_id": "F-000000000002",
+                "id_scheme": "content-v1",
+                "initial_verdict": "false_positive",
+                "reviewed_at": "2026-09-01T11:00:00+00:00",
+            }])
+            rows = record_verdict.verdict_rows(log, "F-000000000001")
+        self.assertEqual(
+            [row["finding_id"] for row in rows], ["F-000000000001"]
+        )
+
+    def test_rows_without_a_verdict_are_not_counted(self):
+        # Human-decision rows share the finding_id but decide on a verdict
+        # rather than being one, so superseding must not see them.
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [{
+                "finding_id": "F-000000000001",
+                "human_decision": "accepted",
+            }])
+            self.assertEqual(record_verdict.verdict_rows(log, "F-000000000001"), [])
+
+    def test_absent_log_has_no_rows(self):
+        with temp_tree({}) as root:
+            self.assertEqual(
+                record_verdict.verdict_rows(root / "absent.csv", "F-1"), []
+            )
+
+
+class TestSupersedeCli(unittest.TestCase):
+    """Re-recording must be a deliberate act. The log is append-only, so a
+    silent second row would let metrics count one finding as two."""
+
+    def write_verdict(self, root, **overrides):
+        verdict = make_verdict(severity="low", evidence_level="partial", **overrides)
+        (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+
+    def run_recorder(self, root, extra=()):
+        return subprocess.run(
+            [
+                sys.executable, str(REPO_ROOT / "scripts" / "record_verdict.py"),
+                "--verdict", str(root / "verdict.json"),
+                "--agent", "model-a",
+                "--log", str(root / "triage-log.csv"),
+                "--sarif-out", str(root / "reviewed.sarif"),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_first_recording_succeeds(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            proc = self.run_recorder(root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_second_recording_without_the_flag_is_refused(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            self.assertEqual(self.run_recorder(root).returncode, 0)
+            proc = self.run_recorder(root)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("--supersede", proc.stderr)
+            rows = record_verdict.verdict_rows(
+                root / "triage-log.csv", "F-000000000001"
+            )
+        self.assertEqual(len(rows), 1, "a refused run must not append")
+
+    def test_supersede_appends_and_points_back(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            self.assertEqual(self.run_recorder(root).returncode, 0)
+
+            revised = make_verdict(
+                severity="low", evidence_level="partial", verdict="false_positive"
+            )
+            revised["reviewer"]["reviewed_at"] = "2026-09-02T10:00:00+00:00"
+            (root / "verdict.json").write_text(json.dumps(revised), encoding="utf-8")
+
+            proc = self.run_recorder(root, ["--supersede"])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            record_verdict.append_log({
+                "finding_id": "F-000000000001",
+                "human_decision": "accepted",
+            }, root / "triage-log.csv")
+
+            third = make_verdict(severity="low", evidence_level="partial")
+            third["reviewer"]["reviewed_at"] = "2026-09-03T10:00:00+00:00"
+            (root / "verdict.json").write_text(json.dumps(third), encoding="utf-8")
+            proc = self.run_recorder(root, ["--supersede"])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rows = record_verdict.verdict_rows(
+                root / "triage-log.csv", "F-000000000001"
+            )
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[1]["supersedes"], "2026-09-01T10:00:00+00:00")
+        self.assertEqual(rows[1]["initial_verdict"], "false_positive")
+        self.assertEqual(rows[2]["supersedes"], "2026-09-02T10:00:00+00:00")
+
+    def test_duplicate_refusal_precedes_warnings_and_sarif_parsing(self):
+        with temp_tree({}) as root:
+            self.write_verdict(root)
+            self.assertEqual(self.run_recorder(root).returncode, 0)
+
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            sarif.write_text("{ malformed", encoding="utf-8")
+            log_before = log.read_bytes()
+            sarif_before = sarif.read_bytes()
+
+            self.write_verdict(
+                root,
+                reviewer={
+                    "agent": "self-reported-other-model",
+                    "reviewed_at": "2026-09-02T10:00:00+00:00",
+                },
+            )
+            proc = self.run_recorder(root)
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("REFUSED", proc.stderr)
+            self.assertNotIn("WARNING", proc.stderr)
+            self.assertNotIn("SARIF ERROR", proc.stderr)
+            self.assertEqual(log.read_bytes(), log_before)
+            self.assertEqual(sarif.read_bytes(), sarif_before)
+
+
 class TestFallbackValidator(unittest.TestCase):
     """The fallback exists so a missing jsonschema degrades the check rather
     than removing it. It degraded further than advertised."""

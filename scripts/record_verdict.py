@@ -45,6 +45,7 @@ LOG_FIELDS = [
     "minutes_spent", "requires_runtime_proof",
     "agent", "validator",
     "agent_self_reported", "validator_self_reported",
+    "supersedes",
     "notes",
 ]
 
@@ -312,6 +313,23 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
         )
 
 
+def verdict_rows(path: Path, finding_id: str) -> list[dict]:
+    """Previously recorded verdicts for one finding.
+
+    Human-decision rows share the finding_id but carry no initial_verdict, so
+    they are excluded here: superseding a verdict is a different act from
+    deciding on one.
+    """
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as fh:
+        return [
+            row
+            for row in csv.DictReader(fh)
+            if row.get("finding_id") == finding_id and row.get("initial_verdict")
+        ]
+
+
 def build_result(verdict: dict, challenge: dict | None, state: str, rationale: str) -> dict:
     """Build one SARIF result for a reviewed finding.
 
@@ -435,6 +453,8 @@ def main() -> int:
     parser.add_argument("--sarif-out", type=Path, default=SARIF_OUT)
     parser.add_argument("--fresh", action="store_true",
                         help="Discard the existing reviewed SARIF instead of adding to it")
+    parser.add_argument("--supersede", action="store_true",
+                        help="Record a revision of a verdict already in the log")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero unless the finding reaches a terminal state")
     args = parser.parse_args()
@@ -488,6 +508,20 @@ def main() -> int:
     if challenge and challenge.get("finding_id") != verdict["finding_id"]:
         print("ERROR: challenge finding_id does not match the verdict.", file=sys.stderr)
         return 1
+
+    prior = verdict_rows(args.log, verdict["finding_id"])
+    if prior and not args.supersede:
+        print(
+            f"REFUSED: {verdict['finding_id']} already has a verdict recorded "
+            f"at {prior[-1].get('reviewed_at', 'an unknown time')}.\n",
+            file=sys.stderr,
+        )
+        print(
+            "Pass --supersede to record a revision. The log stays append-only:\n"
+            "the earlier row remains and the new one points back at it.",
+            file=sys.stderr,
+        )
+        return 2
 
     # The model fills reviewer.agent in its own output, and models are
     # unreliable about their own identity. The engineer's value is authoritative;
@@ -550,6 +584,7 @@ def main() -> int:
             "validator_self_reported": (challenge or {}).get("validator", {}).get(
                 "agent", ""
             ),
+            "supersedes": prior[-1].get("reviewed_at", "") if prior else "",
             "notes": args.notes,
         },
         args.log,

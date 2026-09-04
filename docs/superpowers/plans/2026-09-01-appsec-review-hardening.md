@@ -3261,6 +3261,8 @@ git commit -m "feat: address findings by id so filters cannot change what N mean
 **Files:**
 - Modify: `scripts/record_verdict.py`
 - Modify: `tests/test_record_verdict.py`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
 - Produces: `record_verdict.verdict_rows(path: Path, finding_id: str) -> list[dict]`, флаг `--supersede`, колонка `supersedes`.
@@ -3277,9 +3279,16 @@ class TestVerdictRows(unittest.TestCase):
                 "id_scheme": "content-v1",
                 "initial_verdict": "true_positive",
                 "reviewed_at": "2026-09-01T10:00:00+00:00",
+            }, {
+                "finding_id": "F-000000000002",
+                "id_scheme": "content-v1",
+                "initial_verdict": "false_positive",
+                "reviewed_at": "2026-09-01T11:00:00+00:00",
             }])
             rows = record_verdict.verdict_rows(log, "F-000000000001")
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            [row["finding_id"] for row in rows], ["F-000000000001"]
+        )
 
     def test_rows_without_a_verdict_are_not_counted(self):
         # Human-decision rows share the finding_id but decide on a verdict
@@ -3360,7 +3369,49 @@ class TestSupersedeCli(unittest.TestCase):
         self.assertEqual(rows[1]["initial_verdict"], "false_positive")
 ```
 
-- [ ] **Step 2: Реализовать**
+Strengthen the CLI regressions as follows:
+
+- Assert each subprocess return code and feature-specific stderr before calling
+  `verdict_rows`, so a missing helper cannot mask the CLI assertion.
+- In the supersede test, append a row with the same `finding_id` and blank
+  `initial_verdict` between the second and third recordings. Assert that the
+  third verdict supersedes the second verdict's `reviewed_at`, not the first
+  verdict or the human-decision row.
+- Add a duplicate-refusal ordering test. After a valid first recording, replace
+  SARIF with malformed bytes and change the verdict's self-reported agent.
+  Snapshot both artefacts and assert inside `temp_tree` that an unflagged
+  duplicate is `REFUSED`, emits neither `WARNING` nor `SARIF ERROR`, and leaves
+  both byte-for-byte unchanged.
+
+- [ ] **Step 2: Прогнать focused RED и сохранить доказательство**
+
+Run:
+
+```bash
+python3 -m unittest tests.test_record_verdict.TestVerdictRows tests.test_record_verdict.TestSupersedeCli -v
+```
+
+Expected: the new tests fail because `verdict_rows` and `--supersede` do not
+exist yet. Record the genuine failure output in
+`docs/superpowers/evidence/2026-09-01-red-tests.md`.
+
+Mutation proof after the implementation is restored:
+
+```bash
+python3 -m unittest \
+  tests.test_record_verdict.TestSupersedeCli.test_second_recording_without_the_flag_is_refused -v
+python3 -m unittest \
+  tests.test_record_verdict.TestSupersedeCli.test_supersede_appends_and_points_back -v
+python3 -m unittest \
+  tests.test_record_verdict.TestSupersedeCli.test_duplicate_refusal_precedes_warnings_and_sarif_parsing -v
+```
+
+Temporarily disable duplicate refusal, disable `--supersede`, and move duplicate
+detection after warnings and SARIF parsing, respectively. Each command must
+fail at its subprocess/output assertion; restore production code after each
+mutation and record the outputs in RED evidence.
+
+- [ ] **Step 3: Реализовать**
 
 Дописать в `scripts/record_verdict.py`:
 
@@ -3389,7 +3440,9 @@ def verdict_rows(path: Path, finding_id: str) -> list[dict]:
                         help="Record a revision of a verdict already in the log")
 ```
 
-После проверки совместимости лога:
+After log compatibility, verdict and challenge schema validation, consistency
+validation, and challenge-ID matching, but before warnings, SARIF parsing,
+`append_log`, or any write:
 
 ```python
     prior = verdict_rows(args.log, verdict["finding_id"])
@@ -3409,13 +3462,16 @@ def verdict_rows(path: Path, finding_id: str) -> list[dict]:
             "supersedes": prior[-1].get("reviewed_at", "") if prior else "",
 ```
 
-- [ ] **Step 3: Прогнать и закоммитить**
+- [ ] **Step 4: Прогнать и закоммитить**
 
 Run: `make test`
 Expected: всё зелёное.
 
 ```bash
-git add scripts/record_verdict.py tests/test_record_verdict.py
+git add scripts/record_verdict.py tests/test_record_verdict.py \
+  docs/superpowers/plans/2026-09-01-appsec-review-hardening.md \
+  docs/superpowers/evidence/2026-09-01-red-tests.md \
+  docs/superpowers/evidence/2026-09-01-plan-fixes.md
 git commit -m "feat: require --supersede to revise a recorded verdict"
 ```
 

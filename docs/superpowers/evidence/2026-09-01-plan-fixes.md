@@ -213,3 +213,38 @@
   path without changing it. These are local corrections that preserve scope,
   identity, empty-queue, JSON, output-order, partial-write, policy, and egress
   controls.
+
+## Task 17 RED evidence, staging, and validation order
+
+- Before: Task 17 had no explicit focused RED step after adding its tests, did
+  not list the red-test or plan-fixes evidence files under `Files`, and staged
+  only production code and tests. Its prose placed duplicate detection directly
+  after log compatibility while accessing `verdict["finding_id"]`, although the
+  verdict is loaded and validated later.
+- After: Task 17 runs and records the focused `TestVerdictRows` and
+  `TestSupersedeCli` RED command before implementation; lists and stages both
+  evidence files; and performs duplicate/supersede detection after verdict and
+  challenge schema validation, consistency validation, and challenge-ID
+  matching, but before warnings, SARIF parsing, `append_log`, or any write.
+- Why: The explicit RED run supplies the required causality evidence. Moving
+  the check avoids unvalidated access while preserving the intended refusal and
+  no-partial-write ordering. Both are local, unambiguous corrections that do
+  not change the supersession behavior, scope, independence, policy, or egress.
+
+## Task 17 review fix: behavioral proof and latest-lineage coverage
+
+- Before: The two CLI tests read `verdict_rows` before asserting the subprocess
+  result, so the original missing-helper RED could mask missing duplicate and
+  `--supersede` behavior. Row filtering lacked a nonmatching verdict case;
+  lineage lacked a third verdict and intervening human-decision row; and no test
+  proved duplicate refusal precedes warnings and malformed-SARIF parsing.
+- After: CLI tests assert subprocess results first; filtering includes an exact
+  nonmatching verdict row; lineage covers three verdicts with an intervening
+  blank-`initial_verdict` human-decision row; and an ordering test snapshots
+  both artefacts while requiring refusal before warnings/SARIF parsing. Three
+  controlled mutations prove duplicate refusal, `--supersede`, and ordering
+  behavior independently.
+- Why: These corrections make the regressions exercise the intended observable
+  controls rather than fail at an unrelated helper access. They are local and
+  unambiguous, and preserve scope, independence, append-only behavior,
+  partial-write guarantees, policy, and egress.
