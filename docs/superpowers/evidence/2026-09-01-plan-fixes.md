@@ -386,3 +386,27 @@
   bypass the identity safeguard this task introduces. This is a local,
   unambiguous documentation correction and does not alter scanner behavior,
   scope, independence, partial writes, identity derivation, or egress.
+
+## Task 20 review fix round 1: fail-closed template control
+
+- Before: The prescribed shell `if grep` recipe treated both "no placeholders"
+  and "cannot read CLAUDE.md" as success, so a missing context file passed the
+  pre-flight gate. Task 20's file and staging lists also omitted a dedicated
+  script and its process-level tests.
+- After: `scripts/check_template.py` distinguishes clean, templated, and
+  unreadable inputs; the Make target delegates to it; and
+  `tests/test_check_template.py` covers all three process outcomes plus focused
+  placeholder parsing. The Task 20 file and staging lists name both new files.
+- Why: A control that promises repository-specific context must refuse when it
+  cannot inspect that context. This is a fail-closed correction that preserves
+  the gate's scope and required exit 2 while adding direct process evidence.
+
+## Task 20 pre-flight checklist deduplication
+
+- Before: The corrected Task 20 plan draft repeated the `BY=` privacy
+  pre-flight item.
+- After: The plan contains exactly one instruction to use a role in `BY=` and
+  never a name or email address.
+- Why: This is a local documentation deduplication only; it preserves the
+  privacy requirement and does not change behavior, scope, identity,
+  independence, partial writes, or egress.

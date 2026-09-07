@@ -92,16 +92,7 @@ check-scope:
 	@python3 scripts/check_scope.py --list
 
 check-template:
-	@if grep -nE '<[A-Za-z][^>]*>' CLAUDE.md; then \
-		echo ""; \
-		echo "CLAUDE.md still has template placeholders, listed above."; \
-		echo "Fill in trust boundaries, entry points and accepted patterns"; \
-		echo "for this repository. Until then the evidence standard is hollow:"; \
-		echo "the agent cannot know what an attacker controls."; \
-		exit 2; \
-	else \
-		echo "CLAUDE.md has no unfilled placeholders."; \
-	fi
+	@python3 scripts/check_template.py
 
 test:
 	@python3 -m unittest discover -s tests -t . -v

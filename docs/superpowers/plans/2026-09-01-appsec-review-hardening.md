@@ -4381,6 +4381,7 @@ git commit -m "feat: collapse rows into findings and report agent accuracy"
 - Modify: `README.md`, `docs/02-setup.md`, `docs/03-data-handling.md`, `docs/04-procedures.md`, `docs/07-graduation.md`, `CLAUDE.md`, `Makefile`
 - Modify: `templates/verdict.schema.json`, `templates/challenge.schema.json`, `prompts/adversarial-validate.md`
 - Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`, `docs/superpowers/evidence/2026-09-01-red-tests.md`, `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+- Create: `scripts/check_template.py`, `tests/test_check_template.py`
 - Create: `tests/test_makefile.py`
 - Create: `templates/threat-model.md`
 
@@ -4684,20 +4685,175 @@ What change would make this document wrong.
   ordinary development work with its own tests.
 ```
 
-Добавить цель в `Makefile`, дописав `check-template` в `.PHONY`:
+Контроль реализуется скриптом, а не рецептом с шеллом. `if grep; then …; else …`
+объединяет два разных исхода: «совпадений нет» (статус 1) и «файл не прочитан»
+(статус 2) — и на отсутствующем `CLAUDE.md` печатает успех с кодом 0. Это
+fail-open ровно в том месте, где `docs/03` обещает обратное. Кроме того, каждый
+другой контроль здесь — Python-скрипт со своим тестовым файлом, и этот не должен
+быть исключением: тесты процесса нужны на все три исхода.
+
+Создать `scripts/check_template.py`:
+
+```python
+#!/usr/bin/env python3
+"""Refuse to proceed while CLAUDE.md is still the shipped template.
+
+The evidence standard rests on CLAUDE.md naming this repository's entry points
+and trust boundaries. Until it does, "traced" means nothing, because the agent
+cannot know what an attacker controls.
+
+Same shape as check_scope refusing without a policy file: a control that cannot
+read its input refuses, rather than reporting success. A shell `if grep` cannot
+express that - it folds "no matches" and "no such file" into one branch - which
+is why this is a script.
+
+Exit codes:
+    0  no placeholders remain
+    2  placeholders remain, or the file is missing or unreadable
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATE_PATH = REPO_ROOT / "CLAUDE.md"
+PLACEHOLDER = re.compile(r"<[A-Za-z][^>]*>")
+
+
+def find_placeholders(text: str) -> list[tuple[int, str]]:
+    """Line numbers and contents of every line still carrying a placeholder."""
+    return [
+        (number, line.strip())
+        for number, line in enumerate(text.splitlines(), start=1)
+        if PLACEHOLDER.search(line)
+    ]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", nargs="?", type=Path, default=TEMPLATE_PATH)
+    args = parser.parse_args()
+
+    try:
+        text = args.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"REFUSED: cannot read {args.path}: {exc}", file=sys.stderr)
+        print(
+            "\nThis check exists to prove the file describes this repository. "
+            "It cannot prove that about a file it cannot read.",
+            file=sys.stderr,
+        )
+        return 2
+
+    placeholders = find_placeholders(text)
+    if placeholders:
+        print(f"REFUSED: {args.path} still has template placeholders:\n", file=sys.stderr)
+        for number, line in placeholders:
+            print(f"  {number:>4}  {line}", file=sys.stderr)
+        print(
+            "\nFill in trust boundaries, entry points and accepted patterns for "
+            "this repository. Until then the evidence standard is hollow: the "
+            "agent cannot know what an attacker controls.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"{args.path}: no unfilled placeholders")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+Цель в `Makefile`, с `check-template` в `.PHONY`:
 
 ```make
 check-template:
-	@if grep -nE '<[A-Za-z][^>]*>' CLAUDE.md; then \
-		echo ""; \
-		echo "CLAUDE.md still has template placeholders, listed above."; \
-		echo "Fill in trust boundaries, entry points and accepted patterns"; \
-		echo "for this repository. Until then the evidence standard is hollow:"; \
-		echo "the agent cannot know what an attacker controls."; \
-		exit 2; \
-	else \
-		echo "CLAUDE.md has no unfilled placeholders."; \
-	fi
+	@python3 scripts/check_template.py
+```
+
+Тесты `tests/test_check_template.py` — три исхода, все через процесс:
+
+```python
+"""Tests for the template control.
+
+docs/03 tells the reader that a passing check-template proves CLAUDE.md
+describes this repository. The shell version reported success when the file was
+absent, so the claim was false in exactly the case that matters most.
+"""
+
+import subprocess
+import sys
+import unittest
+
+import check_template
+from tests import REPO_ROOT
+from tests.helpers import temp_tree
+
+SCRIPT = REPO_ROOT / "scripts" / "check_template.py"
+
+FILLED = (
+    "# Project context\n\n"
+    "- Attacker-controlled input enters at: HTTP handlers in app/routes.py\n"
+    "- Security-critical modules: app/auth.py, app/crypto.py\n"
+)
+TEMPLATED = (
+    "# Project context\n\n"
+    "- Attacker-controlled input enters at: `<HTTP handlers, queue consumers>`\n"
+    "- Security-critical modules requiring extra scrutiny: `<auth, crypto>`\n"
+)
+
+
+class TestFindPlaceholders(unittest.TestCase):
+    def test_reports_line_numbers(self):
+        found = check_template.find_placeholders(TEMPLATED)
+        self.assertEqual([number for number, _ in found], [3, 4])
+
+    def test_filled_file_has_none(self):
+        self.assertEqual(check_template.find_placeholders(FILLED), [])
+
+    def test_prose_angle_brackets_do_not_count(self):
+        # "less than" in prose must not be mistaken for a placeholder.
+        self.assertEqual(check_template.find_placeholders("if a < b and c > d\n"), [])
+
+
+class TestProcess(unittest.TestCase):
+    def run_check(self, path):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), str(path)],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_placeholders_are_refused(self):
+        with temp_tree({"CLAUDE.md": TEMPLATED}) as root:
+            proc = self.run_check(root / "CLAUDE.md")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("REFUSED", proc.stderr)
+
+    def test_filled_file_passes(self):
+        with temp_tree({"CLAUDE.md": FILLED}) as root:
+            proc = self.run_check(root / "CLAUDE.md")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("no unfilled placeholders", proc.stdout)
+
+    def test_missing_file_is_refused_not_reported_clean(self):
+        # The shell version printed "no unfilled placeholders" and exited 0
+        # here, which is the fail-open this control exists to avoid.
+        with temp_tree({}) as root:
+            proc = self.run_check(root / "CLAUDE.md")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("REFUSED", proc.stderr)
+        self.assertNotIn("no unfilled placeholders", proc.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
 ```
 
 В `help`:
@@ -4760,7 +4916,7 @@ Expected: три находки со сводкой и подсказкой пр
 - [ ] **Step 8: Коммит**
 
 ```bash
-git add README.md docs CLAUDE.md Makefile templates prompts tests/test_makefile.py
+git add README.md docs CLAUDE.md Makefile templates prompts scripts/check_template.py tests/test_check_template.py tests/test_makefile.py
 git commit -m "docs: reconcile documentation with the code that ships"
 ```
 
