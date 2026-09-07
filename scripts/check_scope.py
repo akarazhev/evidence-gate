@@ -153,6 +153,37 @@ def check_path(path: str, exclusions: list[dict] | None = None) -> None:
             )
 
 
+def resolve_within(
+    repo: Path, relative: str, exclusions: list[dict] | None = None
+) -> Path:
+    """Resolve a repository-relative path, refusing what the policy excludes.
+
+    The lexical check alone is not enough. A symlink sitting at an allowed path
+    can point at an excluded file, and reading it puts exactly the content the
+    policy forbids into a packet: a link at app/handler.py pointing to
+    ../secrets/token.txt produced a packet containing the secret.
+
+    So the resolved target is checked as well, and a target outside the
+    repository is refused outright. The policy describes paths within the
+    repository and cannot speak for anything beyond it.
+    """
+    check_path(relative, exclusions)
+
+    root = repo.resolve()
+    target = (root / relative).resolve()
+    try:
+        inside = target.relative_to(root)
+    except ValueError:
+        raise ScopeViolation(
+            relative,
+            "<outside repository>",
+            f"resolves to {target}, which is outside {root}",
+        )
+
+    check_path(str(inside), exclusions)
+    return target
+
+
 def is_allowed(path: str, exclusions: list[dict] | None = None) -> bool:
     try:
         check_path(path, exclusions)

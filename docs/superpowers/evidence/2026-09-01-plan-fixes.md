@@ -410,3 +410,17 @@
 - Why: This is a local documentation deduplication only; it preserves the
   privacy requirement and does not change behavior, scope, identity,
   independence, partial writes, or egress.
+
+## Task 21 evidence and staging completeness
+
+- Before: Task 21 named only its three scripts and three test modules, omitting
+  the corrected plan, RED/GREEN evidence, plan-fixes evidence, mutation checks,
+  staging, and commit steps. The user's Layer 7 plan extension was uncommitted.
+- After: The Task 21 file list includes the plan and both evidence documents;
+  explicit steps require RED/GREEN records, a restored mutation check for each
+  critical defect, focused verification, one final `make test`, diff review,
+  and one commit with subject `fix: close validation and scope bypasses`.
+  Staging includes the entire existing user-authored Layer 7 plan extension.
+- Why: The controller authorized this local completeness correction. It makes
+  the controls' evidence reviewable and preserves the user's work without
+  changing the specification, exclusion policy, or the scope of Tasks 22–23.

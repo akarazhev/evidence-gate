@@ -62,6 +62,117 @@ class TestScopeCheckOrdering(unittest.TestCase):
                 )
 
 
+class TestResolvedScopeControl(unittest.TestCase):
+    def setUp(self):
+        self.result = build_packet.load_sarif_results(SARIF)[0]
+        self.result.update(start_line=1, end_line=1)
+
+    def test_content_identity_refuses_an_excluded_symlink(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+            with self.assertRaises(check_scope.ScopeViolation):
+                build_packet.compute_finding_id(self.result, repo, fixture_exclusions())
+
+    def test_target_symlink_is_refused_even_with_a_fingerprint(self):
+        self.result["partialFingerprints"] = {"semgrep.fingerprint": "fixture-target"}
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+            with self.assertRaises(check_scope.ScopeViolation):
+                packet = build_packet.build_triage_packet(
+                    self.result, repo, 0, fixture_exclusions()
+                )
+                self.fail(f"Excluded source entered target_code: {packet['target_code']}")
+
+    def test_dataflow_symlink_is_refused_before_target_content_is_read(self):
+        self.result["code_flows"] = [{"steps": [
+            {"file": "app/route.py", "line": 1, "message": "source"},
+        ]}]
+        # Leave the primary file absent: resolving the dataflow must refuse
+        # before content identity attempts to open that primary file.
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "app/route.py").symlink_to("../secrets/token.txt")
+            with self.assertRaises(check_scope.ScopeViolation):
+                build_packet.build_triage_packet(
+                    self.result, repo, 0, fixture_exclusions()
+                )
+
+    def test_dataflow_symlink_cannot_expose_excluded_content(self):
+        self.result["code_flows"] = [{"steps": [
+            {"file": "app/route.py", "line": 1, "message": "source"},
+        ]}]
+        with temp_tree({"app/handler.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "app/route.py").symlink_to("../secrets/token.txt")
+            with self.assertRaises(check_scope.ScopeViolation):
+                packet = build_packet.build_triage_packet(
+                    self.result, repo, 0, fixture_exclusions()
+                )
+                self.fail(f"Excluded source entered dataflow_context: {packet['dataflow_context']}")
+
+    def test_allowed_links_supply_target_and_dataflow_context(self):
+        self.result["code_flows"] = [{"steps": [
+            {"file": "app/route.py", "line": 1, "message": "source"},
+        ]}]
+        with temp_tree({"app/safe.py": "safe()\n", "app/source.py": "source()\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("safe.py")
+            (repo / "app/route.py").symlink_to("source.py")
+            packet = build_packet.build_triage_packet(
+                self.result, repo, 0, fixture_exclusions()
+            )
+        self.assertEqual(packet["target_code"], "     1 | safe()")
+        self.assertEqual(packet["dataflow_context"], [{
+            "file": "app/route.py", "line": 1,
+            "scanner_note": "source", "code": "     1 | source()",
+        }])
+
+    def test_cli_refuses_symlink_targets_without_writing_packets(self):
+        for destination in ("excluded", "outside", "directory"):
+            with self.subTest(destination=destination), temp_tree({
+                "repo/app/safe.py": "safe()\n",
+                "repo/secrets/token.txt": "TOP-SECRET\n",
+                "outside.txt": "OUTSIDE-CONTENT\n",
+            }) as root:
+                repo = root / "repo"
+                if destination == "excluded":
+                    (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+                    target_path = "app/handler.py"
+                elif destination == "outside":
+                    (repo / "app/handler.py").symlink_to(root / "outside.txt")
+                    target_path = "app/handler.py"
+                else:
+                    (repo / "app/linked").symlink_to("../secrets", target_is_directory=True)
+                    target_path = "app/linked/token.txt"
+                data = json.loads(SARIF.read_text(encoding="utf-8"))
+                result = data["runs"][0]["results"][0]
+                result["locations"][0]["physicalLocation"] = {
+                    "artifactLocation": {"uri": target_path},
+                    "region": {"startLine": 1, "endLine": 1},
+                }
+                data["runs"][0]["results"] = [result]
+                sarif = root / "input.sarif"
+                sarif.write_text(json.dumps(data), encoding="utf-8")
+                out = root / "packets"
+                proc = subprocess.run(
+                    [
+                        sys.executable, str(REPO_ROOT / "scripts/build_packet.py"),
+                        "--sarif", str(sarif), "--repo", str(repo),
+                        "--index", "0", "--out", str(out),
+                    ],
+                    capture_output=True, text=True, cwd=root,
+                )
+                written = [
+                    json.loads(path.read_text(encoding="utf-8"))["target_code"]
+                    for path in out.glob("*.json")
+                ]
+                self.assertEqual(proc.returncode, 2, f"{proc.stdout}{proc.stderr}written={written}")
+                self.assertIn("REFUSED", proc.stderr)
+                if destination == "outside":
+                    self.assertIn(str((root / "outside.txt").resolve()), proc.stderr)
+                    self.assertIn("<outside repository>", proc.stderr)
+                self.assertFalse(out.exists(), "a refused run must not create packets")
+                self.assertNotIn("TOP-SECRET", proc.stdout + proc.stderr)
+                self.assertNotIn("OUTSIDE-CONTENT", proc.stdout + proc.stderr)
+
+
 class TestReadContext(unittest.TestCase):
     def setUp(self):
         self.text = "\n".join(f"line{i}" for i in range(1, 11)) + "\n"

@@ -4924,6 +4924,360 @@ git commit -m "docs: reconcile documentation with the code that ships"
 
 ---
 
+---
+
+# Слой 7 — правки финального ревью ветки
+
+Все пункты проверены исполнением, а не чтением. Два критических касаются
+контролей и подтверждены воспроизведением.
+
+### Task 21: Критические — обход валидации и обход области
+
+**Files:**
+- Modify: `scripts/record_verdict.py`, `scripts/check_scope.py`, `scripts/build_packet.py`
+- Modify: `tests/test_record_verdict.py`, `tests/test_check_scope.py`, `tests/test_build_packet.py`
+- Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+
+- [ ] **Step 1: Пустой челлендж обходит валидацию**
+
+Проверено: `decide_state(high true_positive, {})` возвращает
+`('confirmed', 'true positive; severity=high does not require adversarial validation under policy')`.
+Тот же вердикт с `None` даёт правильное `blocked_needs_challenge`.
+
+Два дефекта в одном. `{}` достаточно ложно, чтобы `if challenge:` в `main`
+пропустил проверку по схеме, и недостаточно `None`, чтобы сработала ветка
+блокировки. А формулировка утверждает, что политика не требует валидации для
+`high` — что просто неправда.
+
+Причина в том, что ветвление идёт по контейнеру, а не по результату. Заменить
+начало `decide_state`:
+
+```python
+    v = verdict["verdict"]
+    severity = verdict.get("severity", "info")
+    needs_challenge = severity in CHALLENGE_REQUIRED
+
+    # Drive off the result, not the container. An empty challenge object is not
+    # a challenge: it is falsy enough to skip schema validation in main, yet not
+    # None enough to reach the blocked branch, so a high finding was promoted to
+    # confirmed under a rationale claiming policy did not require validation.
+    challenge_result = (challenge or {}).get("challenge_result")
+
+    if needs_challenge and challenge_result is None:
+        return (
+            "blocked_needs_challenge",
+            f"severity={severity} requires adversarial validation before promotion",
+        )
+
+    if challenge_result in ("refuted", "inconclusive"):
+        return (
+            "human_review",
+            f"the two passes disagree (challenge={challenge_result}); a human decides",
+        )
+```
+
+После этой перестановки `_unchallenged_note` недостижима для severities,
+требующих челленджа: они уже вернулись выше. Формулировка становится истинной по
+построению, а не по внимательности. Отметить это в её docstring.
+
+В `main` заменить `if challenge:` на `if challenge is not None:`, чтобы `{}`
+доходило до схемы и отвергалось на отсутствующих обязательных полях.
+
+Тесты: `{}` даёт `blocked_needs_challenge` для high; челлендж без
+`challenge_result` — то же; `--challenge` на файл с `{}` отвергается по схеме и
+ничего не пишет.
+
+- [ ] **Step 2: Символьные ссылки обходят область**
+
+Проверено: ссылка `app/handler.py -> ../secrets/token.txt` проходит лексическую
+проверку и отдаёт содержимое в пакет. В прогоне вернулось `1 | TOP-SECRET`.
+
+Это обход центрального контроля репозитория. Лексической проверки недостаточно:
+проверяется имя, а читается то, куда оно ведёт.
+
+Решение — проверять и то, что открывается. Добавить в `scripts/check_scope.py`:
+
+```python
+def resolve_within(
+    repo: Path, relative: str, exclusions: list[dict] | None = None
+) -> Path:
+    """Resolve a repository-relative path, refusing what the policy excludes.
+
+    The lexical check alone is not enough. A symlink sitting at an allowed path
+    can point at an excluded file, and reading it puts exactly the content the
+    policy forbids into a packet: a link at app/handler.py pointing to
+    ../secrets/token.txt produced a packet containing the secret.
+
+    So the resolved target is checked as well, and a target outside the
+    repository is refused outright. The policy describes paths within the
+    repository and cannot speak for anything beyond it.
+    """
+    check_path(relative, exclusions)
+
+    root = repo.resolve()
+    target = (root / relative).resolve()
+    try:
+        inside = target.relative_to(root)
+    except ValueError:
+        raise ScopeViolation(
+            relative,
+            "<outside repository>",
+            f"resolves to {target}, which is outside {root}",
+        )
+
+    check_path(str(inside), exclusions)
+    return target
+```
+
+В `build_packet.py` каждое чтение исходника идёт через него: в
+`build_triage_packet` для целевого файла и каждого шага dataflow, и в
+`compute_finding_id` на пути по содержимому. `read_context` получает уже
+разрешённый путь.
+
+Тесты: ссылка на исключённый файл внутри репозитория — `ScopeViolation`; ссылка
+наружу — `ScopeViolation` с указанием, куда она ведёт; обычный файл работает как
+прежде; каталог-ссылка в середине пути тоже отвергается.
+
+- [ ] **Step 3: Доказательства RED/GREEN и проверки мутациями**
+
+Сначала добавить регрессионные тесты и сохранить команды, коды выхода и
+фактический вывод RED в `docs/superpowers/evidence/2026-09-01-red-tests.md`.
+После исправления сохранить GREEN для затронутых модулей.
+
+Для каждого критического дефекта отдельно выполнить проверку мутацией:
+временно вернуть обход пустого челленджа и показать, что регрессия обнаруживает
+неправомерное продвижение и пропуск схемы; восстановить исправление. Затем
+временно отключить проверку разрешённой цели в `resolve_within` и показать,
+что регрессия обнаруживает принятие или раскрытие исключённого либо внешнего
+содержимого; восстановить исправление. Сохранить точные команды и существенный
+вывод обеих мутаций в том же файле доказательств.
+
+Убедиться, что обе мутации полностью удалены, повторить затронутые тесты и
+один раз выполнить `make test` перед коммитом. Просмотреть итоговый diff.
+Исправление неполного списка файлов и шагов этого задания зафиксировать в
+`docs/superpowers/evidence/2026-09-01-plan-fixes.md`.
+
+- [ ] **Step 4: Индексация и единый коммит**
+
+Включить в коммит всё уже написанное пользователем расширение плана «Слой 7»,
+сохранив его содержание; реализацию Task 22 и Task 23 сюда не добавлять.
+
+```bash
+git add scripts/record_verdict.py scripts/check_scope.py scripts/build_packet.py tests/test_record_verdict.py tests/test_check_scope.py tests/test_build_packet.py docs/superpowers/plans/2026-09-01-appsec-review-hardening.md docs/superpowers/evidence/2026-09-01-red-tests.md docs/superpowers/evidence/2026-09-01-plan-fixes.md
+git diff --cached --check
+git commit -m "fix: close validation and scope bypasses"
+```
+
+---
+
+### Task 22: Важные
+
+**Files:**
+- Modify: `scripts/scan.sh`, `scripts/record_verdict.py`, `scripts/build_packet.py`, `scripts/metrics.py`, `Makefile`
+- Modify: соответствующие тестовые файлы
+
+- [ ] **Step 1: `--metrics=off` не закрывает весь egress**
+
+Semgrep по умолчанию делает HTTP-запрос проверки версии, и `--metrics=off` его не
+отключает. Флаг `--disable-version-check` установленным semgrep принимается —
+проверено. Добавить его в вызов `scan.sh` рядом с `--metrics=off` и в оба
+поведенческих теста с подставным semgrep: записанные аргументы обязаны содержать
+оба флага.
+
+- [ ] **Step 2: Структурно битый SARIF даёт частичную запись**
+
+`load_existing_results` принимает `results: [null]` без исключения — проверено, —
+а падает потом `merge_result`, уже после `append_log`. Порядок был исправлен в
+Task 8, но проверка оказалась слишком мелкой: она ловит нечитаемый JSON и не
+ловит читаемый мусор.
+
+Дополнить проверку структуры перед возвратом:
+
+```python
+    results = runs[0].get("results", [])
+    for index, result in enumerate(results):
+        if not isinstance(result, dict) or not isinstance(
+            result.get("properties"), dict
+        ):
+            raise ValidationError(
+                f"{path}: results[{index}] is not a reviewed finding. Refusing "
+                "to merge into a file this tool did not write. Move it aside, "
+                "or pass --fresh."
+            )
+    return results
+```
+
+Исключение возникает до `append_log`, поэтому частичной записи больше нет.
+Регрессия: SARIF с `[null]` даёт non-zero и лог без новой строки.
+
+- [ ] **Step 3: Многострочный подсчёт вхождений склеивает разные находки**
+
+`occurrence_index` скользит окном сырых строк, тогда как цель нормализована с
+удалением пустых строк. Окно той же сырой длины нормализуется к другой длине,
+настоящий более ранний дубль не засчитывается, и две разные области получают
+один id.
+
+Считать по нормализованным строкам файла, а не по сырым окнам:
+
+```python
+def occurrence_index(file_text: str, start_line: int, end_line: int, target: str) -> int:
+    """How many identical normalized snippets appear before this one.
+
+    Counted over the file's normalized lines, not raw windows. The target has
+    had blank lines and indentation removed, so a raw window of the same length
+    can normalize to something shorter; a genuine earlier duplicate then goes
+    uncounted and two distinct findings collapse onto one id.
+    """
+    normalized = [
+        (number, line.strip())
+        for number, line in enumerate(file_text.splitlines(), start=1)
+        if line.strip()
+    ]
+    target_lines = target.split("\n")
+    span = len(target_lines)
+
+    count = 0
+    for i in range(0, max(0, len(normalized) - span + 1)):
+        window = normalized[i:i + span]
+        if window[0][0] >= start_line:
+            break
+        if [text for _, text in window] == target_lines:
+            count += 1
+    return count
+```
+
+Регрессия: две многострочные области, нормализующиеся одинаково, получают разные
+id; сдвиг строк выше по-прежнему id не меняет.
+
+- [ ] **Step 4: Makefile теряет контекст очереди**
+
+`make list` не передаёт `REPO`, `make triage N=` не передаёт фильтры. Значит
+`make list LEVEL=error` и следом `make triage N=0` берут находку из разных
+списков, что прямо противоречит обещанию «индексы относятся к отфильтрованному
+списку».
+
+Ввести общую переменную фильтров и использовать её в обеих целях:
+
+```make
+QUEUE_FILTERS = $(if $(LEVEL),--level $(LEVEL),) \
+	$(if $(RULE),--rule $(RULE),) \
+	$(if $(PATH_GLOB),--path $(PATH_GLOB),) \
+	$(if $(UNREVIEWED),--unreviewed,) \
+	$(if $(LIMIT),--limit $(LIMIT),)
+
+list:
+	@python3 scripts/build_packet.py --sarif $(SARIF) --repo $(REPO) --list $(QUEUE_FILTERS)
+
+triage:
+	@python3 scripts/build_packet.py --sarif $(SARIF) --repo $(REPO) \
+		$(if $(ID),--finding-id $(ID),--index $(N) $(QUEUE_FILTERS))
+```
+
+Фильтры при `ID=` не передаются намеренно: адресация по id не зависит от того,
+что показано.
+
+- [ ] **Step 5: Подавление в SARIF всё ещё утверждает валидацию**
+
+`build_result` жёстко пишет `"Dismissed after adversarial validation. {rationale}"`
+даже когда челленджа не было. Тот же дефект, что и §1.1, в месте, до которого
+Task 7 не дошёл. Заменить на:
+
+```python
+            "justification": f"Dismissed after review. {rationale}",
+```
+
+`rationale` уже содержит правду о том, была ли валидация. Тест: подавление
+непроверенной находки не содержит подстроки `adversarial validation`.
+
+- [ ] **Step 6: Решение человека переживает пересмотр вердикта — решение о замысле**
+
+Последовательность confirmed → accepted → superseded-dismissed сейчас оставляет
+старое «accepted» как ground truth для нового вердикта. Человек принимал другое
+решение о другом состоянии, и такая запись фабрикует согласие.
+
+**Решение: вердикт, записанный позже решения, это решение отменяет.** Находка
+возвращается в неразрешённое состояние и снова попадает в знаменатель покрытия —
+что корректно сигнализирует «это надо решить заново». Историческая запись не
+теряется: лог append-only, отменяется только схлопнутое текущее состояние.
+
+В `collapse` запоминать момент решения и отбрасывать его, если победивший
+вердикт новее:
+
+```python
+        decision = decisions.get(finding_id)
+        if decision and decision_at.get(finding_id, "") < verdict_at.get(finding_id, ""):
+            # A verdict recorded after the decision supersedes it: the human
+            # accepted a different state than the one that now stands.
+            decision = None
+```
+
+Сравнение — через `_moment` из Step 7, не лексическое.
+
+Тест `test_decision_survives_a_later_verdict_revision` из Task 19 переписать:
+решение переживает пересмотр, записанный **раньше** него, и отменяется
+пересмотром, записанным позже.
+
+- [ ] **Step 7: Сортировка по времени лексическая, а не хронологическая**
+
+Проверено: `2026-09-01T12:00:00+03:00` лексически больше
+`2026-09-01T10:00:00+00:00`, хронологически — раньше. Спека предписывает пару
+`(reviewed_at, индекс)`, но подразумевала сравнение моментов, а не строк.
+
+```python
+def _moment(value: str) -> datetime:
+    """Parse a log timestamp into an aware datetime, UTC when unqualified.
+
+    Sorting these as strings is wrong: 12:00+03:00 sorts after 10:00+00:00 yet
+    happens an hour earlier. The log mixes offsets as soon as two reviewers work
+    in different zones.
+    """
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+```
+
+Ключ сортировки становится `(_moment(row.get("reviewed_at", "")), index)`.
+`filter_since` разбирает и границу через `_moment`, сравнивая осведомлённые
+моменты, — это заодно убирает `TypeError` на смешанных смещениях.
+
+Тест: вердикт `12:00+03:00` проигрывает вердикту `10:00+00:00`; `--since` с
+границей в другом часовом поясе не падает и отбирает верно.
+
+- [ ] **Step 8: Красные доказательства не доказывают заявленный дефект**
+
+В Tasks 8, 11, 12 и 19 красный прогон падал на отсутствующем хелпере или
+неизвестном аргументе, а не через сам дефект. Для новой функции это честная
+краснота — дефект нельзя показать через функцию, которой нет. Но для дефектов в
+**существующем** поведении красный прогон обязан показывать неправильное
+поведение, а не отсутствие кода.
+
+Задним числом достроить для Tasks 8 и 12: перейти на родительский коммит, прогнать
+короткий пробник, показывающий сам дефект — перезапись SARIF второй находкой и
+принятие совпадающих моделей соответственно, — и записать вывод в файл
+доказательств рядом с прежней записью, пометив её как недостаточную.
+
+Для Tasks 11 и 19 записать явно, что дефект относился к отсутствующему коду и
+красный прогон по нему возможен только как `AttributeError`. Это не оправдание, а
+разграничение: два разных класса краснот, и файл доказательств должен их
+различать.
+
+---
+
+### Task 23: Мелкие
+
+- [ ] Пустой `--finding-id` отвергать явно, а не искать находку с пустым id.
+- [ ] `scripts/record_human_decision.py` сделать исполняемым (`chmod +x`), как остальные скрипты, либо всюду документировать вызов через `python3`. Выбрать первое — остальные скрипты исполняемые.
+- [ ] Страж дрейфа схемы усилить: сверять не только длину `allOf`, но и то, что два условия касаются `confidence` и `evidence_level`. Сейчас перестановка условий тест не заметит.
+- [ ] В сообщении `scan.sh` про сеть говорить «remote rules», а не «Semgrep registry»: произвольный `https://` конфиг не обязан вести в реестр.
+- [ ] В примере Task 19 поправить устаревший предикат нулевых минут.
+
+---
 ## Definition of Done
 
 - `make test` зелёный на голом Python 3.9+ без единой установки.

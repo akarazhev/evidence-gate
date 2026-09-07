@@ -7,7 +7,7 @@ security control rather than a convenience, so it is tested first and hardest.
 import unittest
 
 import check_scope
-from tests.helpers import FIXTURES
+from tests.helpers import FIXTURES, fixture_exclusions, temp_tree
 
 
 class TestParsePolicy(unittest.TestCase):
@@ -97,6 +97,57 @@ class TestMatches(unittest.TestCase):
 
     def test_mixed_case_extension_is_refused(self):
         self.assertRefused("certs/Server.PEM")
+
+
+class TestResolveWithin(unittest.TestCase):
+    def test_regular_file_and_allowed_link_return_the_resolved_path(self):
+        with temp_tree({"app/safe.py": "safe()\n"}) as repo:
+            (repo / "app/alias.py").symlink_to("safe.py")
+            for relative in ("app/safe.py", "app/alias.py"):
+                with self.subTest(relative=relative):
+                    target = check_scope.resolve_within(repo, relative, fixture_exclusions())
+                    self.assertEqual(target, (repo / "app/safe.py").resolve())
+                    self.assertEqual(target.read_text(encoding="utf-8"), "safe()\n")
+
+    def test_symlink_to_excluded_file_is_refused(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+            with self.assertRaises(check_scope.ScopeViolation) as caught:
+                check_scope.resolve_within(repo, "app/handler.py", fixture_exclusions())
+            self.assertEqual(caught.exception.path, "secrets/token.txt")
+            self.assertEqual(caught.exception.pattern, "secrets/")
+
+    def test_outside_symlink_is_refused_with_resolved_destination(self):
+        with temp_tree({"repo/app/safe.py": "safe()\n", "outside.txt": "OUTSIDE-CONTENT\n"}) as root:
+            repo = root / "repo"
+            (repo / "app/handler.py").symlink_to(root / "outside.txt")
+            with self.assertRaises(check_scope.ScopeViolation) as caught:
+                check_scope.resolve_within(repo, "app/handler.py", [])
+            self.assertEqual(caught.exception.path, "app/handler.py")
+            self.assertEqual(caught.exception.pattern, "<outside repository>")
+            self.assertIn(str((root / "outside.txt").resolve()), caught.exception.reason)
+            self.assertIn(str(repo.resolve()), caught.exception.reason)
+
+    def test_symlink_directory_in_the_middle_of_a_path_is_refused(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "app/linked").symlink_to("../secrets", target_is_directory=True)
+            with self.assertRaises(check_scope.ScopeViolation):
+                check_scope.resolve_within(repo, "app/linked/token.txt", fixture_exclusions())
+
+    def test_excluded_link_name_is_refused_even_if_target_is_allowed(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:
+            (repo / "secrets/alias.py").symlink_to("../app/safe.py")
+            with self.assertRaises(check_scope.ScopeViolation) as caught:
+                check_scope.resolve_within(repo, "secrets/alias.py", fixture_exclusions())
+            self.assertEqual(caught.exception.path, "secrets/alias.py")
+
+    def test_explicit_empty_exclusions_do_not_load_live_policy(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "fixture\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+            self.assertEqual(
+                check_scope.resolve_within(repo, "app/handler.py", []),
+                (repo / "secrets/token.txt").resolve(),
+            )
 
 
 if __name__ == "__main__":

@@ -99,6 +99,25 @@ class TestDecideState(unittest.TestCase):
         state, _ = record_verdict.decide_state(make_verdict(severity="medium"), None)
         self.assertEqual(state, "blocked_needs_challenge")
 
+    def test_empty_challenge_cannot_promote_required_severities(self):
+        for severity in ("critical", "high", "medium"):
+            with self.subTest(severity=severity):
+                state, rationale = record_verdict.decide_state(
+                    make_verdict(severity=severity), {}
+                )
+                self.assertEqual(state, "blocked_needs_challenge")
+                self.assertIn("requires adversarial validation", rationale)
+                self.assertNotIn("does not require", rationale)
+
+    def test_challenge_without_result_cannot_promote_high(self):
+        challenge = make_challenge()
+        del challenge["challenge_result"]
+        state, rationale = record_verdict.decide_state(
+            make_verdict(severity="high"), challenge
+        )
+        self.assertEqual(state, "blocked_needs_challenge")
+        self.assertIn("requires adversarial validation", rationale)
+
     def test_refuted_challenge_goes_to_human(self):
         state, rationale = record_verdict.decide_state(
             make_verdict(), make_challenge("refuted")
@@ -240,6 +259,33 @@ class TestIndependenceControl(unittest.TestCase):
         challenge = make_challenge("upheld")
         (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
         (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
+
+    def test_empty_challenge_is_schema_refused_without_writes(self):
+        # Exercise the real CLI both with normal imports and with site packages
+        # disabled, so the optional validator cannot hide a fallback bypass.
+        for python_args in ([], ["-S"]):
+            with self.subTest(python_args=python_args), temp_tree({
+                "verdict.json": json.dumps(make_verdict(severity="high")),
+                "challenge.json": "{}",
+            }) as root:
+                log = root / "triage-log.csv"
+                sarif = root / "reviewed.sarif"
+                proc = subprocess.run(
+                    [
+                        sys.executable, *python_args,
+                        str(REPO_ROOT / "scripts" / "record_verdict.py"),
+                        "--verdict", str(root / "verdict.json"),
+                        "--challenge", str(root / "challenge.json"),
+                        "--agent", "model-a", "--validator", "model-b",
+                        "--log", str(log), "--sarif-out", str(sarif),
+                    ],
+                    capture_output=True, text=True, cwd=root,
+                )
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("SCHEMA ERROR: challenge.schema.json", proc.stderr)
+                self.assertIn("required", proc.stderr)
+                self.assertFalse(log.exists(), "a refused run must not write the log")
+                self.assertFalse(sarif.exists(), "a refused run must not write SARIF")
 
     def test_same_model_is_refused_and_writes_nothing(self):
         with temp_tree({"placeholder": ""}) as root:

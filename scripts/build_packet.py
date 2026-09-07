@@ -28,6 +28,7 @@ from check_scope import (  # noqa: E402
     check_path,
     load_policy,
     matches as check_scope_matches,
+    resolve_within,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -116,7 +117,7 @@ def compute_finding_id(
     if fingerprint:
         return _digest(f"{rule_id}:{path}:{fingerprint}")
 
-    target_file = repo / path
+    target_file = resolve_within(repo, path, exclusions)
     if not target_file.exists():
         raise FileNotFoundError(
             f"Source file not found: {target_file}. Run the scan from the "
@@ -228,13 +229,13 @@ def build_triage_packet(
     candidates = [result["file"]] + [
         step["file"] for flow in result["code_flows"] for step in flow["steps"]
     ]
-    for path in candidates:
-        if path:
-            check_path(path, exclusions)
+    resolved_paths = {
+        path: resolve_within(repo, path, exclusions) for path in candidates if path
+    }
 
     fid = compute_finding_id(result, repo, exclusions)
 
-    target = repo / result["file"]
+    target = resolved_paths[result["file"]]
     context = read_context(target, result["start_line"], result["end_line"], window)
     if context is None:
         raise FileNotFoundError(
@@ -249,7 +250,9 @@ def build_triage_packet(
             if key in seen or not step["file"] or step["file"] == result["file"]:
                 continue
             seen.add(key)
-            snippet = read_context(repo / step["file"], step["line"], step["line"], 12)
+            snippet = read_context(
+                resolved_paths[step["file"]], step["line"], step["line"], 12
+            )
             if snippet:
                 flow_context.append(
                     {

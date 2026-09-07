@@ -201,6 +201,9 @@ def _unchallenged_note(verdict_label: str, severity: str) -> str:
     medium require a challenge; reporting a low finding as "upheld under
     adversarial validation" would write a false statement into reviewed.sarif
     and the triage log, where it outlives everyone who remembers the context.
+
+    Required severities cannot reach this helper: decide_state blocks a
+    missing challenge result before choosing any unchallenged rationale.
     """
     return (
         f"{verdict_label}; severity={severity} does not require adversarial "
@@ -214,15 +217,17 @@ def decide_state(verdict: dict, challenge: dict | None) -> tuple[str, str]:
     severity = verdict.get("severity", "info")
     needs_challenge = severity in CHALLENGE_REQUIRED
 
-    if challenge is None:
-        if needs_challenge:
-            return (
-                "blocked_needs_challenge",
-                f"severity={severity} requires adversarial validation before promotion",
-            )
-        challenge_result = None
-    else:
-        challenge_result = challenge.get("challenge_result")
+    # Drive off the result, not the container. An empty challenge object is not
+    # a challenge: it is falsy enough to skip schema validation in main, yet not
+    # None enough to reach the blocked branch, so a high finding was promoted to
+    # confirmed under a rationale claiming policy did not require validation.
+    challenge_result = (challenge or {}).get("challenge_result")
+
+    if needs_challenge and challenge_result is None:
+        return (
+            "blocked_needs_challenge",
+            f"severity={severity} requires adversarial validation before promotion",
+        )
 
     if challenge_result in ("refuted", "inconclusive"):
         return (
@@ -488,7 +493,7 @@ def main() -> int:
 
     try:
         validate(verdict, "verdict.schema.json")
-        if challenge:
+        if challenge is not None:
             validate(challenge, "challenge.schema.json")
     except ValidationError as exc:
         print(f"SCHEMA ERROR: {exc}", file=sys.stderr)
