@@ -248,3 +248,49 @@
   controls rather than fail at an unrelated helper access. They are local and
   unambiguous, and preserve scope, independence, append-only behavior,
   partial-write guarantees, policy, and egress.
+
+## Task 18 shared compatibility control
+
+- Before: The Task 18 script sketch did not invoke
+  `record_verdict.check_log_compatible` before writing its decision row.
+- After: It imports and calls `check_log_compatible(args.log, ID_SCHEME)` after
+  finding the recorded verdict and before SARIF parsing or `append_log`; a
+  readable stale-header regression proves refusal and no log growth.
+- Why: The shared log contract is the existing control against writing a row
+  under stale column names. Omitting the call leaves a corrupting append path;
+  adding it is an unambiguous reuse of Task 13's required interface and
+  preserves append-only and no-partial-write behavior.
+
+## Task 18 shared appender control
+
+- Before: The Task 18 sketch carried a duplicated `append_decision` helper with
+  the pre-Task-13 `exists = path.exists()` header decision.
+- After: The script imports and uses `record_verdict.append_log` directly, with
+  no local CSV append implementation.
+- Why: The duplicate could drift from the zero-byte-log header invariant that
+  Task 13 established. Reusing the shared appender is an unambiguous local
+  correction and preserves the authoritative `LOG_FIELDS` order.
+
+## Task 18 sequencing, evidence, and file list
+
+- Before: Task 18 expanded production `LOG_FIELDS` before its tests, omitted an
+  explicit focused RED command and mutation-evidence step, and did not list or
+  stage the plan and two evidence artifacts.
+- After: Tests are authored and run with
+  `python3 -m unittest tests.test_human_decision -v` before production changes;
+  the plan requires focused/full GREEN plus both restored mutations; and its
+  Files and staging lists include the plan, red-tests evidence, and plan-fixes
+  evidence.
+- Why: This supplies TDD causality and keeps the required evidence with the
+  implementation. The correction is local and does not change Task 18's human
+  decision, compatibility, SARIF, policy, scope, or egress intent.
+
+## Task 18 invalid-decision test hygiene
+
+- Before: `test_invalid_decision_is_refused` required only a non-zero exit
+  status, which a missing script or unsupported invocation could satisfy.
+- After: It additionally requires argparse's feature-specific `invalid choice`
+  diagnostic for the value `maybe`.
+- Why: The strengthened assertion ensures the RED/GREEN cycle proves the
+  decision enum rather than an unrelated process failure. This is an
+  unambiguous test-hygiene correction with no production behavior change.

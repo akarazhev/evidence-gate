@@ -1,4 +1,4 @@
-.PHONY: help install scan list triage validate record metrics goldenset import clean check-scope test
+.PHONY: help install scan list triage validate record decide metrics goldenset import clean check-scope test
 
 REPO    ?= .
 SARIF   ?= findings/raw.sarif
@@ -17,6 +17,7 @@ help:
 	@echo "  make triage ID=F-abc      build a packet by finding id"
 	@echo "  make validate ID=F-abc    build the adversarial challenge packet"
 	@echo "  make record ID=F-abc AGENT=<model> VALIDATOR=<model> MINUTES=12"
+	@echo "  make decide ID=F-abc DECISION=rejected BY=appsec-oncall"
 	@echo "  make metrics              programme health"
 	@echo "  make goldenset            regression bench"
 	@echo "  make import ENGAGEMENT=42 upload to DefectDojo"
@@ -57,6 +58,14 @@ record:
 		$(if $(VALIDATOR),--validator "$(VALIDATOR)",) \
 		$(if $(wildcard findings/challenges/$(ID).json),--challenge findings/challenges/$(ID).json,) \
 		$(if $(MINUTES),--minutes $(MINUTES),)
+
+decide:
+	@test -n "$(ID)" || (echo "Set ID=<finding-id>" && exit 1)
+	@test -n "$(DECISION)" || (echo "Set DECISION=accepted|rejected|escalated" && exit 1)
+	@test -n "$(BY)" || (echo "Set BY=<role or work handle, not a name>" && exit 1)
+	@python3 scripts/record_human_decision.py --finding-id $(ID) \
+		--decision $(DECISION) --by "$(BY)" \
+		$(if $(RATIONALE),--rationale "$(RATIONALE)",)
 
 metrics:
 	@python3 scripts/metrics.py

@@ -3484,20 +3484,26 @@ git commit -m "feat: require --supersede to revise a recorded verdict"
 - Create: `tests/test_human_decision.py`
 - Modify: `scripts/record_verdict.py` (`LOG_FIELDS`)
 - Modify: `Makefile`
+- Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
 **Interfaces:**
-- Consumes: `record_verdict.LOG_FIELDS`, `record_verdict.load_existing_results`, `record_verdict.sarif_document`, `record_verdict.check_log_compatible`.
+- Consumes: `record_verdict.append_log`, `record_verdict.check_log_compatible`, `record_verdict.verdict_rows`, `record_verdict.load_existing_results`, `record_verdict.sarif_document`, `record_verdict.ID_SCHEME`.
 - Produces: колонки `human_decision`, `human_decision_at`, `human_decision_by`, `human_rationale`; цель `make decide`.
 
-- [ ] **Step 1: Расширить набор колонок**
+- [ ] **Step 1: Написать падающие тесты и зафиксировать RED**
 
-В `scripts/record_verdict.py` добавить в `LOG_FIELDS` перед `"supersedes"`:
+Сначала создать `tests/test_human_decision.py` и выполнить:
 
-```python
-    "human_decision", "human_decision_at", "human_decision_by", "human_rationale",
+```text
+python3 -m unittest tests.test_human_decision -v
 ```
 
-- [ ] **Step 2: Написать падающие тесты**
+Записать настоящий RED в `docs/superpowers/evidence/2026-09-01-red-tests.md`.
+В частности, `test_invalid_decision_is_refused` обязан требовать
+feature-specific сообщение argparse `invalid choice`, чтобы отсутствующий скрипт
+не мог удовлетворить тест только non-zero кодом.
 
 `tests/test_human_decision.py`:
 
@@ -3560,8 +3566,9 @@ class TestDecisionRecording(unittest.TestCase):
                 "--finding-id", "F-000000000001", "--decision", "maybe",
                 "--by", "appsec-oncall", "--log", str(log),
                 "--sarif", str(root / "reviewed.sarif"),
-            ])
+        ])
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("invalid choice", proc.stderr)
 
     def test_decision_is_appended_to_the_log(self):
         with temp_tree({}) as root:
@@ -3579,6 +3586,34 @@ class TestDecisionRecording(unittest.TestCase):
         self.assertEqual(rows[-1]["human_decision"], "rejected")
         self.assertEqual(rows[-1]["human_decision_by"], "appsec-oncall")
         self.assertEqual(rows[-1]["finding_id"], "F-000000000001")
+
+    def test_stale_log_header_is_refused_and_nothing_is_written(self):
+        # A log written before a column existed. Its verdict row is still
+        # readable, so the run gets past the "no verdict" check and reaches the
+        # log contract, which must refuse rather than append under old names.
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            stale_fields = [f for f in record_verdict.LOG_FIELDS if f != "notes"]
+            values = {
+                "finding_id": "F-000000000001",
+                "initial_verdict": "true_positive",
+                "final_state": "confirmed",
+                "reviewed_at": "2026-09-01T10:00:00+00:00",
+            }
+            with log.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=stale_fields)
+                writer.writeheader()
+                writer.writerow({k: values.get(k, "") for k in stale_fields})
+            before = log.read_text(encoding="utf-8")
+            proc = self.run_script([
+                "--finding-id", "F-000000000001", "--decision", "accepted",
+                "--by", "appsec-oncall", "--log", str(log),
+                "--sarif", str(root / "reviewed.sarif"),
+            ])
+            after = log.read_text(encoding="utf-8")
+            self.assertEqual(before, after, "a refused run must not append")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("LOG ERROR", proc.stderr)
 
     def test_malformed_sarif_refuses_and_leaves_the_log_untouched(self):
         # Regression for the ordering fix: the SARIF is parsed before anything
@@ -3631,6 +3666,14 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
+- [ ] **Step 2: Расширить набор колонок**
+
+В `scripts/record_verdict.py` добавить в `LOG_FIELDS` перед `"supersedes"`:
+
+```python
+    "human_decision", "human_decision_at", "human_decision_by", "human_rationale",
+```
+
 - [ ] **Step 3: Написать скрипт**
 
 `scripts/record_human_decision.py`:
@@ -3664,7 +3707,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from datetime import datetime, timezone
@@ -3672,10 +3714,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from record_verdict import (  # noqa: E402
-    LOG_FIELDS,
+    ID_SCHEME,
     LOG_PATH,
     SARIF_OUT,
     ValidationError,
+    append_log,
+    check_log_compatible,
     load_existing_results,
     sarif_document,
     verdict_rows,
@@ -3693,16 +3737,6 @@ def latest_verdict_row(path: Path, finding_id: str) -> dict | None:
     """
     rows = verdict_rows(path, finding_id)
     return rows[-1] if rows else None
-
-
-def append_decision(path: Path, row: dict) -> None:
-    exists = path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
-        if not exists:
-            writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in LOG_FIELDS})
 
 
 def find_sarif_result(results: list[dict], finding_id: str) -> dict | None:
@@ -3734,6 +3768,16 @@ def main() -> int:
               "would sit in the log describing nothing.", file=sys.stderr)
         return 2
 
+    # Same log contract as record_verdict, invoked rather than reimplemented.
+    # A stale header would file this row's values under old column names, and a
+    # foreign identity scheme means the ids already in the log do not mean what
+    # this row's id means.
+    try:
+        check_log_compatible(args.log, ID_SCHEME)
+    except ValidationError as exc:
+        print(f"LOG ERROR: {exc}", file=sys.stderr)
+        return 1
+
     # Parse the SARIF before writing anything. The triage log is append-only,
     # so a row written before a SARIF failure could never be taken back and the
     # two artefacts would disagree permanently.
@@ -3745,8 +3789,7 @@ def main() -> int:
     target = find_sarif_result(results, args.finding_id)
 
     decided_at = datetime.now(timezone.utc).isoformat()
-    append_decision(
-        args.log,
+    append_log(
         {
             "reviewed_at": decided_at,
             "finding_id": args.finding_id,
@@ -3762,6 +3805,7 @@ def main() -> int:
             "human_decision_by": args.by,
             "human_rationale": args.rationale,
         },
+        args.log,
     )
 
     if target is not None:
@@ -3808,13 +3852,39 @@ decide:
 	@echo "  make decide ID=F-abc DECISION=rejected BY=appsec-oncall"
 ```
 
-- [ ] **Step 5: Прогнать и закоммитить**
+- [ ] **Step 5: Проверить GREEN и доказать контролы мутациями**
+
+Выполнить focused GREEN:
+
+```text
+python3 -m unittest tests.test_human_decision -v
+```
+
+После GREEN, до коммита, выполнить и восстановить обе мутации, записав команды,
+релевантный вывод и восстановление в `red-tests.md` и отчёте:
+
+1. Временно убрать или обойти `check_log_compatible`, затем выполнить
+   `test_stale_log_header_is_refused_and_nothing_is_written`; он должен стать RED
+   именно потому, что лог вырос. Восстановить shared compatibility call.
+2. Временно заменить импортированный shared `append_log` локальным appender с
+   прежним `exists = path.exists()` решением заголовка. Напрямую вызвать этот
+   exact Task 18 appender symbol на существующем zero-byte temp log с
+   representative decision row (или equally direct behavioural probe) и
+   подтвердить, что его первая/единственная строка -- data row, а не
+   `LOG_FIELDS` header. Восстановить imported shared appender.
+
+После каждого восстановления вновь выполнить focused тесты, затем full suite.
+
+- [ ] **Step 6: Прогнать и закоммитить**
 
 Run: `make test`
 Expected: всё зелёное.
 
 ```bash
-git add scripts/record_human_decision.py scripts/record_verdict.py tests/test_human_decision.py Makefile
+git add scripts/record_human_decision.py scripts/record_verdict.py tests/test_human_decision.py Makefile \
+  docs/superpowers/plans/2026-09-01-appsec-review-hardening.md \
+  docs/superpowers/evidence/2026-09-01-red-tests.md \
+  docs/superpowers/evidence/2026-09-01-plan-fixes.md
 git commit -m "feat: record the human decision as programme ground truth"
 ```
 

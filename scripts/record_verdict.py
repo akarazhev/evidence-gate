@@ -45,6 +45,7 @@ LOG_FIELDS = [
     "minutes_spent", "requires_runtime_proof",
     "agent", "validator",
     "agent_self_reported", "validator_self_reported",
+    "human_decision", "human_decision_at", "human_decision_by", "human_rationale",
     "supersedes",
     "notes",
 ]
