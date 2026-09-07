@@ -4378,8 +4378,10 @@ git commit -m "feat: collapse rows into findings and report agent accuracy"
 ### Task 20: Привести документацию в соответствие
 
 **Files:**
-- Modify: `README.md`, `docs/03-data-handling.md`, `docs/04-procedures.md`, `docs/07-graduation.md`, `CLAUDE.md`, `Makefile`
+- Modify: `README.md`, `docs/02-setup.md`, `docs/03-data-handling.md`, `docs/04-procedures.md`, `docs/07-graduation.md`, `CLAUDE.md`, `Makefile`
 - Modify: `templates/verdict.schema.json`, `templates/challenge.schema.json`, `prompts/adversarial-validate.md`
+- Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`, `docs/superpowers/evidence/2026-09-01-red-tests.md`, `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+- Create: `tests/test_makefile.py`
 - Create: `templates/threat-model.md`
 
 **Interfaces:**
@@ -4444,6 +4446,94 @@ reproduce or put in a ticket.
 Documentation files follow an internal series, so the numbering has gaps.
 ```
 
+**Привести Quick start в соответствие с обязательными аргументами.** Сейчас он
+учит `make record ID=<finding-id>`, что после слоя 2 не работает и выводит
+читателя прямо на контроль независимости без объяснения. Заменить второй блок
+команд:
+
+```bash
+make validate ID=F-abc123   # build the adversarial challenge packet
+make record ID=F-abc123 AGENT=<triage model> VALIDATOR=<validation model> MINUTES=12
+make decide ID=F-abc123 DECISION=accepted BY=appsec-oncall
+make metrics                # how the programme is actually performing
+```
+
+Следом абзац: `make record` отказывает, когда `AGENT` и `VALIDATOR` совпадают.
+Это механизм, а не пожелание — второй проход на той же модели наследует те же
+слепые пятна. В первом блоке заменить `make install` на
+`make install SEMGREP_VERSION=1.2.3`.
+
+Добавить раздел известных ограничений:
+
+```markdown
+## Known limitations
+
+- `findings/reviewed.sarif` accumulates and is never pruned. Over a long
+  programme it grows without bound; rotate it yourself if that becomes a
+  problem.
+- `make check-template` fails in this repository on purpose: `CLAUDE.md` here is
+  the template you copy and fill in per project.
+- A scanner upgrade can change finding ids. See `docs/02-setup.md`.
+```
+
+- [ ] **Step 1b: `docs/02-setup.md` и закрепление версии сканера**
+
+Фингерпринты сканера питают идентичность: `compute_finding_id` предпочитает
+`partialFingerprints` содержимому. Апгрейд semgrep может их изменить, а значит
+перевыдать ключи всем находкам, осиротить вердикты и воскресить всё ранее
+отклонённое. Сейчас `make install` ставит `semgrep` без версии, а `docs/02`
+называет его без номера.
+
+Требовать версию так же, как набор правил: отказом, а не просьбой. В `Makefile`:
+
+```make
+SEMGREP_VERSION ?=
+
+install:
+	@test -n "$(SEMGREP_VERSION)" || ( \
+	  echo "Set SEMGREP_VERSION=<version>."; \
+	  echo ""; \
+	  echo "Scanner fingerprints feed finding identity, so an unpinned"; \
+	  echo "upgrade silently re-keys every finding and orphans its verdicts."; \
+	  echo "See docs/02-setup.md."; \
+	  exit 1)
+	pip install "semgrep==$(SEMGREP_VERSION)"
+	@echo ""
+	@echo "Record $(SEMGREP_VERSION) in docs/02-setup.md before the first scan."
+	@echo "Optional: syft, grype or trivy, and jsonschema for strict validation."
+```
+
+В `docs/02-setup.md` заменить `- Semgrep` на `- Semgrep, at a pinned version
+(see below)` и добавить раздел:
+
+```markdown
+### Pin the scanner version
+
+Semgrep's fingerprints feed finding identity: the packet builder prefers
+`partialFingerprints` over file content when deriving a finding id. An upgrade
+can change those fingerprints, which re-keys every finding, which orphans its
+verdicts and resurrects everything previously dismissed.
+
+So the version is pinned, and `make install` refuses without one:
+
+    make install SEMGREP_VERSION=1.2.3
+
+Record the version in use here, before the first scan:
+
+**Scanner version:** `<fill in>`
+
+Treat an upgrade the way you would an identity-scheme change: archive
+`findings/` and re-triage. `record_verdict.py` refuses to mix identity schemes
+in one log, but it cannot detect a scanner upgrade for you. That one is on the
+engineer, which is why the version is written down rather than inferred.
+```
+
+И строка в пре-флайт чек-лист `docs/03`:
+
+```markdown
+- [ ] Scanner version pinned and recorded in `docs/02-setup.md`
+```
+
 - [ ] **Step 2: `docs/07-graduation.md`**
 
 Дописать после списка критериев:
@@ -4465,6 +4555,20 @@ set, plus:
 
 **Fill both thresholds in before the pilot starts.** Choosing them after the
 numbers arrive is not measurement, it is fitting the criteria to the result.
+```
+
+Терминология в существующем списке устарела после §5.4: строки про
+«False-positive rate» и «lower false positives» называют величину, которая
+теперь зовётся dismissal rate и означает действие конвейера, а не его правоту.
+Заменить их на:
+
+```markdown
+- Dismissal rate is measured over decided findings, not guessed.
+- Confirmed findings are appearing; a falling dismissal rate is not just
+  deferrals.
+- Agent accuracy is computed from recorded human decisions, with coverage high
+  enough to trust it. A dismissal rate with no accuracy behind it says what the
+  pipeline did, not whether it was right.
 ```
 
 - [ ] **Step 3: `docs/04-procedures.md`**
@@ -4656,7 +4760,7 @@ Expected: три находки со сводкой и подсказкой пр
 - [ ] **Step 8: Коммит**
 
 ```bash
-git add README.md docs CLAUDE.md Makefile templates prompts
+git add README.md docs CLAUDE.md Makefile templates prompts tests/test_makefile.py
 git commit -m "docs: reconcile documentation with the code that ships"
 ```
 

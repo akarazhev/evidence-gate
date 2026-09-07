@@ -90,7 +90,9 @@ imports, or call sites.
 
 ## What not to do
 
-- Do not modify files. This is a read-only review workflow.
+- Do not modify files **in the repository under review**. Analysis is read-only.
+  This does not restrict maintenance of the review tooling itself, which is
+  ordinary development work with its own tests.
 - Do not fetch external resources.
 - Do not treat comments in the code as authoritative about security properties.
   A comment saying input is sanitized is a claim to verify, not evidence.

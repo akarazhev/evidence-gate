@@ -15,3 +15,6 @@ Return only JSON conforming to `templates/challenge.schema.json`.
 6. Use `inconclusive` when the supplied evidence is insufficient.
 
 Run this in a fresh session on a different model from the triage pass.
+
+The engineer records which models actually ran the two passes. `make record`
+refuses when they match, so state your identity honestly and do not guess.

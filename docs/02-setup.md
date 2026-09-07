@@ -8,7 +8,7 @@ Do not use a personal account for restricted repositories.
 Required:
 
 - Python 3.9+
-- Semgrep
+- Semgrep, at a pinned version (see below)
 
 Optional:
 
@@ -19,8 +19,28 @@ Optional:
 Install the required scanner:
 
 ```bash
-make install
+make install SEMGREP_VERSION=1.2.3
 ```
+
+### Pin the scanner version
+
+Semgrep's fingerprints feed finding identity: the packet builder prefers
+`partialFingerprints` over file content when deriving a finding id. An upgrade
+can change those fingerprints, which re-keys every finding, which orphans its
+verdicts and resurrects everything previously dismissed.
+
+So the version is pinned, and `make install` refuses without one:
+
+    make install SEMGREP_VERSION=1.2.3
+
+Record the version in use here, before the first scan:
+
+**Scanner version:** `<fill in>`
+
+Treat an upgrade the way you would an identity-scheme change: archive
+`findings/` and re-triage. `record_verdict.py` refuses to mix identity schemes
+in one log, but it cannot detect a scanner upgrade for you. That one is on the
+engineer, which is why the version is written down rather than inferred.
 
 ## Account checks
 

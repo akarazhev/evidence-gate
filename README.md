@@ -41,7 +41,7 @@ in context, which is auditable and enforced by `scripts/check_scope.py`.
 #    docs/02-setup.md         - authentication, which account, what to verify
 #    docs/03-data-handling.md - what leaves the perimeter and what must not
 
-make install          # install deterministic tooling
+make install SEMGREP_VERSION=1.2.3  # install deterministic tooling
 make scan             # semgrep -> findings/raw.sarif
 make triage N=0       # build a review packet for finding #0
 ```
@@ -51,10 +51,55 @@ agent, load `prompts/triage-finding.md` together with the packet, and get back a
 verdict. Then:
 
 ```bash
-make validate ID=<finding-id>   # build the adversarial challenge packet
-make record ID=<finding-id>     # merge verdict + challenge into SARIF and the log
-make metrics                    # how the program is actually performing
+make validate ID=F-abc123   # build the adversarial challenge packet
+make record ID=F-abc123 AGENT=<triage model> VALIDATOR=<validation model> MINUTES=12
+make decide ID=F-abc123 DECISION=accepted BY=appsec-oncall
+make metrics                # how the programme is actually performing
 ```
+
+`make record` refuses when `AGENT` and `VALIDATOR` name the same model. That is
+the independence mechanism, not a preference — a second pass on the same model
+inherits the same blind spots.
+
+## Status
+
+Working: scan, triage queue, packet builder, scope enforcement, verdict
+recording, human decisions, metrics, tests.
+
+**Not implemented.** These are placeholders and will tell you so when run:
+
+- `goldenset/run_goldenset.py` — no regression cases are configured. Until they
+  are, the graduation criterion that depends on them cannot be met; see
+  `docs/07-graduation.md`.
+- `scripts/import_defectdojo.py` — no DefectDojo credentials or import settings.
+  Reviewed findings are in `findings/reviewed.sarif` and can be imported by hand.
+
+## Tests
+
+```bash
+make test
+```
+
+Standard library only, no network, no scanner required. If it needs a
+`pip install` to run, that is a bug.
+
+## The triage queue
+
+`make list` shows every finding. On a real repository that is hundreds, so it
+filters:
+
+```bash
+make list LEVEL=error UNREVIEWED=1
+make list RULE=injection LIMIT=20
+make triage ID=F-abc123
+```
+
+Filters work on what the SARIF carries — scanner `level`, rule id, path. They
+deliberately do not filter on policy severity or priority class: those are
+assigned by the agent during triage and do not exist yet at listing time.
+
+Indices shift when filters change, so use `ID=` for anything you want to
+reproduce or put in a ticket.
 
 ## Layout
 
@@ -66,15 +111,26 @@ make metrics                    # how the program is actually performing
 | `policy/` | Excluded paths and severity policy. Both are enforced by scripts |
 | `scripts/` | Scan, scope check, packet builder, verdict recorder, metrics |
 | `goldenset/` | Regression cases used to qualify any tool or model change |
-| `templates/` | Verdict schema, triage log, threat model template |
+| `templates/` | Verdict and challenge schemas, threat-model template |
 | `findings/` | Local working directory. Git-ignored |
+
+Documentation files follow an internal series, so the numbering has gaps.
 
 ## Prerequisites
 
 - Python 3.9+
-- Semgrep (`pip install semgrep`)
+- Semgrep at the version recorded in `docs/02-setup.md`
 - Optional: Trivy or Grype, Syft, DefectDojo instance
 - An agentic coding tool authenticated under commercial terms (see `docs/02-setup.md`)
+
+## Known limitations
+
+- `findings/reviewed.sarif` accumulates and is never pruned. Over a long
+  programme it grows without bound; rotate it yourself if that becomes a
+  problem.
+- `make check-template` fails in this repository on purpose: `CLAUDE.md` here is
+  the template you copy and fill in per project.
+- A scanner upgrade can change finding ids. See `docs/02-setup.md`.
 
 ## License
 

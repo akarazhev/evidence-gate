@@ -1,10 +1,11 @@
-.PHONY: help install scan list triage validate record decide metrics goldenset import clean check-scope test
+.PHONY: help install scan list triage validate record decide metrics goldenset import clean check-scope check-template test
 
 REPO    ?= .
 SARIF   ?= findings/raw.sarif
 N       ?= 0
 ID      ?=
 MINUTES ?=
+SEMGREP_VERSION ?=
 
 help:
 	@echo "appsec-review - manual security review workflow"
@@ -22,12 +23,22 @@ help:
 	@echo "  make goldenset            regression bench"
 	@echo "  make import ENGAGEMENT=42 upload to DefectDojo"
 	@echo "  make check-scope          print the active exclusion policy"
+	@echo "  make check-template       refuse while CLAUDE.md is unfilled"
 	@echo "  make test                 run the test suite (stdlib only)"
 	@echo ""
 	@echo "Read docs/03-data-handling.md before first use."
 
 install:
-	pip install semgrep
+	@test -n "$(SEMGREP_VERSION)" || ( \
+	  echo "Set SEMGREP_VERSION=<version>."; \
+	  echo ""; \
+	  echo "Scanner fingerprints feed finding identity, so an unpinned"; \
+	  echo "upgrade silently re-keys every finding and orphans its verdicts."; \
+	  echo "See docs/02-setup.md."; \
+	  exit 1)
+	pip install "semgrep==$(SEMGREP_VERSION)"
+	@echo ""
+	@echo "Record $(SEMGREP_VERSION) in docs/02-setup.md before the first scan."
 	@echo "Optional: syft, grype or trivy, and jsonschema for strict validation."
 
 scan:
@@ -79,6 +90,18 @@ import:
 
 check-scope:
 	@python3 scripts/check_scope.py --list
+
+check-template:
+	@if grep -nE '<[A-Za-z][^>]*>' CLAUDE.md; then \
+		echo ""; \
+		echo "CLAUDE.md still has template placeholders, listed above."; \
+		echo "Fill in trust boundaries, entry points and accepted patterns"; \
+		echo "for this repository. Until then the evidence standard is hollow:"; \
+		echo "the agent cannot know what an attacker controls."; \
+		exit 2; \
+	else \
+		echo "CLAUDE.md has no unfilled placeholders."; \
+	fi
 
 test:
 	@python3 -m unittest discover -s tests -t . -v

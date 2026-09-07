@@ -135,13 +135,32 @@ sensitive source in the `reasoning` field, either redact before committing or
 move `findings/` to a private store and keep only aggregate metrics in the public
 repository.
 
+## Human decisions carry no schema, deliberately
+
+The contracts in `templates/` are output contracts for a model: they exist
+because model output needs validating before it enters the findings store. A
+human decision is typed at a terminal by a person and is validated by argparse
+and an enum instead.
+
+Do not add a schema for it out of a sense of symmetry. The distinction between
+"a model asserted this" and "a person decided this" is the one that makes the
+accuracy metric mean anything, and a shared schema would blur it.
+
+`--by` takes a role or a work handle. Not a name, not an email address: this
+log is committed, so whatever goes there becomes permanent repository history.
+
 ## Pre-flight checklist
 
 Before the first real review:
 
 - [ ] Agent authenticated with an organizational account, verified not personal
+- [ ] Scanner version pinned and recorded in `docs/02-setup.md`
 - [ ] `excluded-paths.yml` reflects this project, every entry owned and explained
 - [ ] `make check-scope` output reviewed by whoever owns the restrictions
+- [ ] `make check-template` passes, so `CLAUDE.md` describes this repository
+      rather than the template
+- [ ] Whoever records human decisions knows to use a role in `BY=`, never a
+      name or an email address
 - [ ] One packet inspected by hand, end to end
 - [ ] A deliberate refusal tested: point the builder at an excluded path and
       confirm exit code 2

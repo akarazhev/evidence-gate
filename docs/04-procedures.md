@@ -28,7 +28,8 @@ make validate ID=F-abc123          # builds the challenge packet
 challenge packet. Save to `findings/challenges/F-abc123.json`.
 
 ```bash
-make record ID=F-abc123 MINUTES=12
+make record ID=F-abc123 AGENT=<triage model> VALIDATOR=<validation model> MINUTES=12
+make decide ID=F-abc123 DECISION=accepted BY=appsec-oncall
 ```
 
 Record the minutes honestly. Without them the programme has no primary success
@@ -38,6 +39,15 @@ metric and `metrics.py` cannot compute the number that justifies its existence.
 agreement, not validation. The model has already committed to a position and will
 mostly defend it. Independence is the mechanism; a second pass without it is
 theatre.
+
+`make record` refuses when AGENT and VALIDATOR name the same model. That is the
+independence mechanism, not a preference — a second pass on the same model
+inherits the same blind spots.
+
+`make decide` records what you decided about the pipeline's final state, not
+about the agent's original verdict. That distinction is what makes the accuracy
+number in `make metrics` mean anything. Use a role or a work handle for `BY=`:
+the triage log is committed.
 
 ---
 
@@ -60,7 +70,7 @@ Findings come back as an array. Record each one:
 
 ```bash
 for f in findings/verdicts/audit-*.json; do
-  python3 scripts/record_verdict.py --verdict "$f"
+  python3 scripts/record_verdict.py --verdict "$f" --agent "<triage model>"
 done
 ```
 

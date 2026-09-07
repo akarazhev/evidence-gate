@@ -47,7 +47,7 @@
       "required": ["agent", "validated_at"],
       "additionalProperties": false,
       "properties": {
-        "agent": { "type": "string" },
+        "agent": { "type": "string", "description": "Tool and model identifier, self-reported by the model and therefore not authoritative. The engineer supplies the authoritative value via record_verdict.py --validator." },
         "session": { "type": "string" },
         "validated_at": { "type": "string", "format": "date-time" }
       }

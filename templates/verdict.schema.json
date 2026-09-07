@@ -139,7 +139,7 @@
       "required": ["agent", "reviewed_at"],
       "additionalProperties": false,
       "properties": {
-        "agent": { "type": "string", "description": "Tool and model identifier." },
+        "agent": { "type": "string", "description": "Tool and model identifier, self-reported by the model and therefore not authoritative. The engineer supplies the authoritative value via record_verdict.py --agent." },
         "skill": { "type": "string", "description": "Skill pack or prompt file used." },
         "session": { "type": "string" },
         "reviewed_at": { "type": "string", "format": "date-time" }

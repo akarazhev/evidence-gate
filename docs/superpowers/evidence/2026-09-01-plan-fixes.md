@@ -358,3 +358,31 @@
   the programme lacks its primary success measure; an observable regression
   requires both phrases.
 - Why: This is an unambiguous preservation of pre-Task-19 reporting behavior.
+
+## Task 20 install-refusal behavioral coverage and file list
+
+- Before: Task 20 prescribed a version-refusing `make install` recipe but no
+  behavioral regression, and its file and staging lists omitted that test, the
+  corrected plan, the Task 19 green-hash backfill, and this plan-fixes entry.
+- After: `tests/test_makefile.py` runs `make install` with a temporary fake
+  `pip`, proving that an absent `SEMGREP_VERSION` refuses before invocation and
+  that a supplied version passes exactly `install semgrep==<version>`. The
+  Task 20 file and staging lists include the test and documentation artifacts;
+  detailed Task 20 RED/GREEN output stays in the ignored task report.
+- Why: The executable refusal protects finding identity and requires direct,
+  network-free process evidence. This is a local TDD and completeness
+  correction that does not change the specified pinning behavior, scope,
+  validator independence, partial-write guarantees, finding identity, or
+  egress.
+
+## Task 20 README scanner prerequisite
+
+- Before: README's prerequisites still recommended the unpinned command
+  `pip install semgrep`, contradicting Task 20's pinned Quick start and the
+  executable `make install` refusal.
+- After: The prerequisite points to the scanner version recorded in
+  `docs/02-setup.md`.
+- Why: Leaving an unpinned installation path in the primary documentation would
+  bypass the identity safeguard this task introduces. This is a local,
+  unambiguous documentation correction and does not alter scanner behavior,
+  scope, independence, partial writes, identity derivation, or egress.
