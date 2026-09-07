@@ -74,15 +74,25 @@ def normalize_snippet(text: str) -> str:
 def occurrence_index(file_text: str, start_line: int, end_line: int, target: str) -> int:
     """How many identical normalized snippets appear before this one.
 
-    Without it, two identical fragments in one file would collapse into a
-    single id. Stable under line shifts: inserting lines above moves the
-    finding and its earlier duplicates by the same amount, so the count holds.
+    Counted over the file's normalized lines, not raw windows. The target has
+    had blank lines and indentation removed, so a raw window of the same length
+    can normalize to something shorter; a genuine earlier duplicate then goes
+    uncounted and two distinct findings collapse onto one id.
     """
-    lines = file_text.splitlines()
-    span = max(1, end_line - start_line + 1)
+    normalized = [
+        (number, line.strip())
+        for number, line in enumerate(file_text.splitlines(), start=1)
+        if line.strip()
+    ]
+    target_lines = target.split("\n")
+    span = len(target_lines)
+
     count = 0
-    for i in range(0, max(0, start_line - 1)):
-        if normalize_snippet("\n".join(lines[i:i + span])) == target:
+    for i in range(0, max(0, len(normalized) - span + 1)):
+        window = normalized[i:i + span]
+        if window[0][0] >= start_line:
+            break
+        if [text for _, text in window] == target_lines:
             count += 1
     return count
 

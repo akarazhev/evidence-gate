@@ -7,6 +7,12 @@ ID      ?=
 MINUTES ?=
 SEMGREP_VERSION ?=
 
+QUEUE_FILTERS = $(if $(LEVEL),--level $(LEVEL),) \
+	$(if $(RULE),--rule $(RULE),) \
+	$(if $(PATH_GLOB),--path "$(PATH_GLOB)",) \
+	$(if $(UNREVIEWED),--unreviewed,) \
+	$(if $(LIMIT),--limit $(LIMIT),)
+
 help:
 	@echo "appsec-review - manual security review workflow"
 	@echo ""
@@ -45,16 +51,11 @@ scan:
 	./scripts/scan.sh $(REPO)
 
 list:
-	@python3 scripts/build_packet.py --sarif $(SARIF) --list \
-		$(if $(LEVEL),--level $(LEVEL),) \
-		$(if $(RULE),--rule $(RULE),) \
-		$(if $(PATH_GLOB),--path "$(PATH_GLOB)",) \
-		$(if $(UNREVIEWED),--unreviewed,) \
-		$(if $(LIMIT),--limit $(LIMIT),)
+	@python3 scripts/build_packet.py --sarif $(SARIF) --repo $(REPO) --list $(QUEUE_FILTERS)
 
 triage:
 	@python3 scripts/build_packet.py --sarif $(SARIF) --repo $(REPO) \
-		$(if $(ID),--finding-id $(ID),--index $(N))
+		$(if $(ID),--finding-id $(ID),--index $(N) $(QUEUE_FILTERS))
 
 validate:
 	@test -n "$(ID)" || (echo "Set ID=<finding-id>" && exit 1)

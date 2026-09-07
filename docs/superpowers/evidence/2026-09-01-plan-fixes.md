@@ -440,3 +440,67 @@
   that existing guard is preserved and its diagnostic now names the parsed
   type exactly as Step 5 specifies. The correction preserves the specification,
   audit history, exclusion policy, and the scope of Tasks 22–23.
+
+## Task 22 files, evidence, verification, and staging
+
+- Before: Task 22 named only its production files and vague corresponding
+  tests, with no explicit evidence, verification, staging, or commit steps.
+- After: The controller expanded the list to exactly the five production
+  files, five corresponding test files, the plan, and both evidence documents.
+  Steps 9–10 require sequential I2/I3/I5/I7 mutations, exact failure/restoration
+  evidence, final focused tests, one full `make test` after every mutation is
+  restored, diff review, and one commit: `fix: resolve important review findings`.
+- Why: This is the authorized local completeness correction. Task 23 and the
+  specification are outside the edit scope.
+
+## Task 22 shared-filter glob preservation
+
+- Before: Step 4's common filter sketch dropped the quotes around
+  `$(PATH_GLOB)`, although Task 16 already established literal glob forwarding.
+- After: The shared `QUEUE_FILTERS` retains `--path "$(PATH_GLOB)"` for list
+  and index triage, and ID triage omits all queue filters.
+- Why: This preserves the established shell argument boundary and avoids
+  regressing glob handling while fixing repository/filter propagation.
+
+## Task 22 suppression-test correction
+
+- Before: Step 5 prescribed `Dismissed after review. {rationale}` while also
+  requiring an unchallenged suppression to contain no `adversarial validation`
+  substring. Task 7's truthful rationale already says that policy
+  `does not require adversarial validation`.
+- After: The controller confirmed preserving that rationale and requiring the
+  full honest suppression while rejecting the false prefix
+  `Dismissed after adversarial validation`. The mutation restores that prefix
+  and the real recorder regression fails on the false statement.
+- Why: The initial substring prohibition contradicted the exact prescribed
+  behavior. This local test correction preserves truthful provenance.
+
+## Task 22 decision ordering and timestamp fixtures
+
+- Before: Step 6 compared only timestamps, leaving a later log row with an
+  equal instant unable to supersede an earlier decision. An old merge fixture
+  omitted the decision timestamp, and a malformed-timestamp test expected
+  order independence instead of log-index tie-breaking.
+- After: The plan and implementation compare the full event key
+  `(_moment(reviewed_at), log index)`. Equal and equivalent aware instants
+  break by log index; missing/malformed values use the explicit UTC minimum.
+  The positive merge fixture has a later decision timestamp, and invalid-time
+  fixtures assert the final log row wins. I6 and I7 both reached RED before
+  their shared timestamp implementation.
+- Why: The controller required this unambiguous alignment with Step 7 and the
+  specification's tie-breaking rule. No specification edit was made.
+
+## Task 22 historical RED classification and parent snapshots
+
+- Before: Step 8 requested switching to parent commits; Task 8's old RED
+  stopped at missing helpers and Task 12's at unsupported future arguments.
+  Tasks 11/19 described missing-code errors too broadly as defect proof.
+- After: Actual parents `e5a2dd2de21dc8a93bf337d3f0524a724a70b8e0`
+  (Task 8) and `ee81d5cb5e154f114f35cfffff0caa491f21dd73` (Task 12)
+  were extracted with `git archive` into isolated temporary directories.
+  Their original CLIs ran with supported arguments and produced causal
+  failures, recorded beside the earlier entries marked insufficient.
+  Tasks 11/19 explicitly distinguish honest missing-code `AttributeError`
+  RED from causal existing-behavior proof.
+- Why: The controller required actual historical execution while preserving
+  the shared branch. The snapshots were never used to switch/reset the checkout.

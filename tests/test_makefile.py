@@ -1,12 +1,13 @@
 """Behavioral tests for Makefile entry points."""
 
+import json
 import os
 import subprocess
 import unittest
 from pathlib import Path
 
 from tests import REPO_ROOT
-from tests.helpers import temp_tree
+from tests.helpers import FIXTURES, temp_tree
 
 MAKEFILE = REPO_ROOT / "Makefile"
 
@@ -55,6 +56,75 @@ class TestInstall(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(pip_args, ["install", "semgrep==1.2.3"])
+
+
+class TestQueueTargets(unittest.TestCase):
+    def run_make(self, root, target, *variables):
+        return subprocess.run(
+            ["make", "-f", str(MAKEFILE), target, *variables],
+            cwd=root, capture_output=True, text=True,
+        )
+
+    def test_list_and_index_forward_the_same_filters_and_repository(self):
+        recorder = "import json, sys\nfrom pathlib import Path\nPath('argv.json').write_text(json.dumps(sys.argv[1:]))\n"
+        with temp_tree({
+            "scripts/build_packet.py": recorder, "app/one.py": "", "app/two.py": "",
+        }) as root:
+            for target, selector in (("list", ["--list"]), ("triage", ["--index", "2"])):
+                with self.subTest(target=target):
+                    proc = self.run_make(root, target, "REPO=source", "SARIF=input.sarif", "N=2",
+                                         "LEVEL=warning", "RULE=target", "PATH_GLOB=app/*.py",
+                                         "UNREVIEWED=1", "LIMIT=3")
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertEqual(json.loads((root / "argv.json").read_text()), [
+                        "--sarif", "input.sarif", "--repo", "source", *selector,
+                        "--level", "warning", "--rule", "target", "--path", "app/*.py",
+                        "--unreviewed", "--limit", "3",
+                    ])
+
+    def test_id_addressing_does_not_forward_queue_filters(self):
+        recorder = "import json, sys\nfrom pathlib import Path\nPath('argv.json').write_text(json.dumps(sys.argv[1:]))\n"
+        with temp_tree({"scripts/build_packet.py": recorder}) as root:
+            proc = self.run_make(root, "triage", "REPO=source", "SARIF=input.sarif", "ID=F-known",
+                                 "LEVEL=error", "RULE=missing", "PATH_GLOB=absent/*",
+                                 "UNREVIEWED=1", "LIMIT=0")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(json.loads((root / "argv.json").read_text()), [
+                "--sarif", "input.sarif", "--repo", "source", "--finding-id", "F-known",
+            ])
+
+    def test_filtered_list_index_builds_the_listed_finding_in_another_repo(self):
+        results = []
+        for level, name in (("error", "first"), ("warning", "target")):
+            results.append({
+                "ruleId": f"demo.{name}", "level": level, "message": {"text": name},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": f"app/{name}.py"},
+                    "region": {"startLine": 1},
+                }}],
+            })
+        with temp_tree({
+            "scripts/build_packet.py": (REPO_ROOT / "scripts/build_packet.py").read_text(),
+            "scripts/check_scope.py": (REPO_ROOT / "scripts/check_scope.py").read_text(),
+            "policy/excluded-paths.yml": (FIXTURES / "policy-basic.yml").read_text(),
+            "source/app/first.py": "first()\n", "source/app/target.py": "target()\n",
+            "input.sarif": json.dumps({"runs": [{"results": results}]}),
+        }) as root:
+            variables = ("REPO=source", "SARIF=input.sarif", "LEVEL=warning", "RULE=target",
+                         "PATH_GLOB=app/*.py", "UNREVIEWED=1", "LIMIT=1")
+            listing = self.run_make(root, "list", *variables)
+            self.assertEqual(listing.returncode, 0, listing.stdout + listing.stderr)
+            self.assertNotIn("(no id)", listing.stdout, "list must derive identity from REPO")
+            self.assertIn("app/target.py:1", listing.stdout)
+            self.assertNotIn("app/first.py", listing.stdout)
+            triage = self.run_make(root, "triage", "N=0", *variables)
+            self.assertEqual(triage.returncode, 0, triage.stdout + triage.stderr)
+            packets = list((root / "findings/packets").glob("*.json"))
+            self.assertEqual(len(packets), 1)
+            packet = json.loads(packets[0].read_text())
+            self.assertEqual(packet["location"]["file"], "app/target.py")
+            self.assertIn(packet["finding_id"], listing.stdout)
+            self.assertIn("target()", packet["target_code"])
 
 
 if __name__ == "__main__":

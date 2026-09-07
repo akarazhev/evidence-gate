@@ -250,6 +250,25 @@ class TestFindingIdentity(unittest.TestCase):
             )
         self.assertNotEqual(first, second)
 
+    def test_multiline_duplicates_with_blank_lines_have_distinct_stable_ids(self):
+        text = "prepare(cmd)\n\nexec(cmd)\nseparator()\nprepare(cmd)\nexec(cmd)\n"
+        with temp_tree({"app/handler.py": text}) as repo:
+            first = build_packet.compute_finding_id(
+                result_at(start=1, end=3), repo, fixture_exclusions()
+            )
+            second = build_packet.compute_finding_id(
+                result_at(start=5, end=6), repo, fixture_exclusions()
+            )
+            self.assertNotEqual(first, second, "distinct regions must not share an identity")
+            (repo / "app/handler.py").write_text("# shifted\n\n" + text, encoding="utf-8")
+            shifted_first = build_packet.compute_finding_id(
+                result_at(start=3, end=5), repo, fixture_exclusions()
+            )
+            shifted_second = build_packet.compute_finding_id(
+                result_at(start=7, end=8), repo, fixture_exclusions()
+            )
+            self.assertEqual((shifted_first, shifted_second), (first, second))
+
     def test_indentation_change_preserves_identity(self):
         with temp_tree({"app/handler.py": FILE_BEFORE}) as repo:
             original = build_packet.compute_finding_id(
@@ -530,7 +549,7 @@ class TestFindingIdAddressing(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(
                 json.loads(argv_path.read_text(encoding="utf-8")),
-                ["--sarif", "input.sarif", "--list", "--path", "app/*.py"],
+                ["--sarif", "input.sarif", "--repo", ".", "--list", "--path", "app/*.py"],
             )
 
     def test_finding_id_ignores_list_filters_when_building_packet(self):

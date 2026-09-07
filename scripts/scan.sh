@@ -38,5 +38,5 @@ mkdir -p findings
 printf 'Rules:  %s\n' "$config"
 printf 'Target: %s\n\n' "$repo"
 
-semgrep scan --config "$config" --metrics=off --sarif \
+semgrep scan --config "$config" --metrics=off --disable-version-check --sarif \
   --output findings/raw.sarif "$repo"

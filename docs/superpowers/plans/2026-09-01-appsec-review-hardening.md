@@ -5139,7 +5139,12 @@ git commit -m "fix: close validation and scope bypasses"
 
 **Files:**
 - Modify: `scripts/scan.sh`, `scripts/record_verdict.py`, `scripts/build_packet.py`, `scripts/metrics.py`, `Makefile`
-- Modify: соответствующие тестовые файлы
+- Modify: `tests/test_scan_sh.py`, `tests/test_record_verdict.py`, `tests/test_build_packet.py`, `tests/test_makefile.py`, `tests/test_metrics.py`
+- Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`, `docs/superpowers/evidence/2026-09-01-red-tests.md`, `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+
+Для каждого поведения сначала добавить регрессию, получить RED на самом дефекте,
+затем внести минимальное исправление и получить GREEN. Steps 6–7 используют
+общий ключ события; RED для обоих получить до их общей реализации.
 
 - [ ] **Step 1: `--metrics=off` не закрывает весь egress**
 
@@ -5226,7 +5231,7 @@ id; сдвиг строк выше по-прежнему id не меняет.
 ```make
 QUEUE_FILTERS = $(if $(LEVEL),--level $(LEVEL),) \
 	$(if $(RULE),--rule $(RULE),) \
-	$(if $(PATH_GLOB),--path $(PATH_GLOB),) \
+	$(if $(PATH_GLOB),--path "$(PATH_GLOB)",) \
 	$(if $(UNREVIEWED),--unreviewed,) \
 	$(if $(LIMIT),--limit $(LIMIT),)
 
@@ -5251,8 +5256,11 @@ Task 7 не дошёл. Заменить на:
             "justification": f"Dismissed after review. {rationale}",
 ```
 
-`rationale` уже содержит правду о том, была ли валидация. Тест: подавление
-непроверенной находки не содержит подстроки `adversarial validation`.
+`rationale` уже содержит правду о том, была ли валидация. Тест проверяет полное
+честное подавление непроверенной находки и отсутствие ложного утверждения
+`Dismissed after adversarial validation`. Запрет всей подстроки
+`adversarial validation` неверен: правдивое `does not require adversarial
+validation under policy` из Task 7 сохраняется.
 
 - [ ] **Step 6: Решение человека переживает пересмотр вердикта — решение о замысле**
 
@@ -5265,18 +5273,21 @@ Task 7 не дошёл. Заменить на:
 что корректно сигнализирует «это надо решить заново». Историческая запись не
 теряется: лог append-only, отменяется только схлопнутое текущее состояние.
 
-В `collapse` запоминать момент решения и отбрасывать его, если победивший
-вердикт новее:
+В `collapse` запоминать полный ключ решения и вердикта
+`(_moment(reviewed_at), индекс строки журнала)` и отбрасывать решение, если
+ключ победившего вердикта больше:
 
 ```python
         decision = decisions.get(finding_id)
-        if decision and decision_at.get(finding_id, "") < verdict_at.get(finding_id, ""):
+        if decision and finding_id in verdict_at and decision_at[finding_id] < verdict_at[finding_id]:
             # A verdict recorded after the decision supersedes it: the human
             # accepted a different state than the one that now stands.
             decision = None
 ```
 
-Сравнение — через `_moment` из Step 7, не лексическое.
+Сравнение моментов — через `_moment` из Step 7, не лексическое. При равных
+или эквивалентных моментах поздняя строка вердикта отменяет решение, а поздняя
+строка решения применяется к текущему вердикту, как предписывает Step 7.
 
 Тест `test_decision_survives_a_later_verdict_revision` из Task 19 переписать:
 решение переживает пересмотр, записанный **раньше** него, и отменяется
@@ -5320,15 +5331,38 @@ def _moment(value: str) -> datetime:
 **существующем** поведении красный прогон обязан показывать неправильное
 поведение, а не отсутствие кода.
 
-Задним числом достроить для Tasks 8 и 12: перейти на родительский коммит, прогнать
-короткий пробник, показывающий сам дефект — перезапись SARIF второй находкой и
-принятие совпадающих моделей соответственно, — и записать вывод в файл
-доказательств рядом с прежней записью, пометив её как недостаточную.
+Задним числом достроить для Tasks 8 и 12: извлечь `git archive` родительских
+коммитов в отдельные каталоги `mktemp`, не переключая и не сбрасывая общую ветку.
+Task 8: `e5a2dd2de21dc8a93bf337d3f0524a724a70b8e0`;
+Task 12: `ee81d5cb5e154f114f35cfffff0caa491f21dd73`.
+Запустить существующий CLI каждого снимка с поддерживаемыми им аргументами,
+показать перезапись SARIF второй находкой и принятие совпадающих моделей
+соответственно. Записать точные команды, SHA и фактический вывод рядом с
+прежними записями, явно пометив прежние RED как недостаточные.
 
 Для Tasks 11 и 19 записать явно, что дефект относился к отсутствующему коду и
 красный прогон по нему возможен только как `AttributeError`. Это не оправдание, а
 разграничение: два разных класса краснот, и файл доказательств должен их
 различать.
+
+- [ ] **Step 9: Доказательства мутаций и восстановление**
+
+После GREEN по очереди временно отменить каждое исправление I2, I3, I5, I7,
+запустить его регрессию через реальное поведение, получить падение на исходном
+дефекте, восстановить исправление и тем же запуском подтвердить GREEN.
+В `red-tests.md` сохранить точную мутацию, команды и фактический вывод каждого
+падения и восстановления. Одновременно активна только одна мутация.
+
+- [ ] **Step 10: Проверка, доказательства и один коммит**
+
+Сохранить RED/GREEN и исправления плана в двух файлах доказательств. После
+восстановления всех мутаций выполнить профильные наборы и один полный
+`make test`, проверить итоговый diff. Spec и Task 23 не менять.
+
+```bash
+git add scripts/scan.sh scripts/record_verdict.py scripts/build_packet.py scripts/metrics.py Makefile tests/test_scan_sh.py tests/test_record_verdict.py tests/test_build_packet.py tests/test_makefile.py tests/test_metrics.py docs/superpowers/plans/2026-09-01-appsec-review-hardening.md docs/superpowers/evidence/2026-09-01-red-tests.md docs/superpowers/evidence/2026-09-01-plan-fixes.md
+git commit -m "fix: resolve important review findings"
+```
 
 ---
 

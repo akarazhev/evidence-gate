@@ -387,7 +387,7 @@ def build_result(verdict: dict, challenge: dict | None, state: str, rationale: s
         result["suppressions"] = [
             {
                 "kind": "external",
-                "justification": f"Dismissed after adversarial validation. {rationale}",
+                "justification": f"Dismissed after review. {rationale}",
             }
         ]
 
@@ -432,7 +432,17 @@ def load_existing_results(path: Path) -> list[dict]:
     runs = data.get("runs") or []
     if not runs:
         return []
-    return runs[0].get("results", [])
+    results = runs[0].get("results", [])
+    for index, result in enumerate(results):
+        if not isinstance(result, dict) or not isinstance(
+            result.get("properties"), dict
+        ):
+            raise ValidationError(
+                f"{path}: results[{index}] is not a reviewed finding. Refusing "
+                "to merge into a file this tool did not write. Move it aside, "
+                "or pass --fresh."
+            )
+    return results
 
 
 def merge_result(existing: list[dict], result: dict) -> list[dict]:

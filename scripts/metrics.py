@@ -8,7 +8,7 @@ import json
 import statistics
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,34 +36,60 @@ def _minutes(row: dict) -> float | None:
         return None
 
 
+def _moment(value: str) -> datetime:
+    """Parse a log timestamp into an aware datetime, UTC when unqualified.
+
+    Sorting these as strings is wrong: 12:00+03:00 sorts after 10:00+00:00 yet
+    happens an hour earlier. The log mixes offsets as soon as two reviewers work
+    in different zones.
+    """
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def collapse(rows: list[dict]) -> list[dict]:
     """Collapse append-only events with verdict replacement and decision patches."""
     verdicts: dict[str, dict] = {}
     decisions: dict[str, dict] = {}
+    verdict_at: dict[str, tuple[datetime, int]] = {}
+    decision_at: dict[str, tuple[datetime, int]] = {}
     triage_minutes: dict[str, list[float]] = {}
     decision_minutes: dict[str, list[float]] = {}
     verdict_rows_seen: Counter = Counter()
     last_event: dict[str, str] = {}
-    for _, row in sorted(enumerate(rows), key=lambda pair: (pair[1].get("reviewed_at", ""), pair[0])):
+    for index, row in sorted(enumerate(rows), key=lambda pair: (_moment(pair[1].get("reviewed_at", "")), pair[0])):
         finding_id = row.get("finding_id")
         if not finding_id:
             continue
         last_event[finding_id] = row.get("reviewed_at", "")
+        event_key = (_moment(row.get("reviewed_at", "")), index)
         minutes = _minutes(row)
         if _is_verdict_row(row):
             verdicts[finding_id] = {key: value for key, value in row.items() if key not in DECISION_FIELDS}
+            verdict_at[finding_id] = event_key
             verdict_rows_seen[finding_id] += 1
             if minutes is not None:
                 triage_minutes.setdefault(finding_id, []).append(minutes)
         elif row.get("human_decision"):
             decisions[finding_id] = {key: row.get(key, "") for key in DECISION_FIELDS}
+            decision_at[finding_id] = event_key
             if minutes is not None:
                 decision_minutes.setdefault(finding_id, []).append(minutes)
 
     records = []
     for finding_id in sorted(verdicts.keys() | decisions.keys()):
         record = dict(verdicts.get(finding_id, {}))
-        record.update(decisions.get(finding_id, {}))
+        decision = decisions.get(finding_id)
+        if decision and finding_id in verdict_at and decision_at[finding_id] < verdict_at[finding_id]:
+            # A verdict recorded after the decision supersedes it: the human
+            # accepted a different state than the one that now stands.
+            decision = None
+        record.update(decision or {})
         record["finding_id"] = finding_id
         record["last_event_at"] = last_event.get(finding_id, "")
         triage = triage_minutes.get(finding_id, [])
@@ -78,14 +104,11 @@ def collapse(rows: list[dict]) -> list[dict]:
 def filter_since(records: list[dict], since: str | None) -> list[dict]:
     if not since:
         return records
-    cutoff = datetime.fromisoformat(since)
+    cutoff = _moment(since)
     kept = []
     for record in records:
-        try:
-            moment = datetime.fromisoformat((record.get("last_event_at") or "").replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if moment.replace(tzinfo=None) >= cutoff:
+        moment = _moment(record.get("last_event_at", ""))
+        if moment >= cutoff:
             kept.append(record)
     return kept
 

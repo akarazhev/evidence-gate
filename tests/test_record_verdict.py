@@ -409,6 +409,44 @@ class TestIndependenceControl(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("SARIF ERROR", proc.stderr)
 
+    def test_unchallenged_dismissal_suppression_does_not_claim_validation(self):
+        with temp_tree({
+            "verdict.json": json.dumps(make_verdict(severity="info", verdict="false_positive")),
+        }) as root:
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder([
+                "--verdict", str(root / "verdict.json"), "--agent", "model-a",
+                "--sarif-out", str(sarif), "--log", str(root / "triage-log.csv"),
+            ], root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            result = json.loads(sarif.read_text())["runs"][0]["results"][0]
+            justification = result["suppressions"][0]["justification"]
+            self.assertNotIn("Dismissed after adversarial validation", justification)
+            self.assertEqual(justification, "Dismissed after review. false positive; severity=info "
+                             "does not require adversarial validation under policy")
+
+    def test_structurally_invalid_sarif_refuses_without_log_growth(self):
+        for result in (None, {}, {"properties": None}, {"properties": []}):
+            with self.subTest(result=result), temp_tree({}) as root:
+                self.setup_files(root)
+                log = root / "triage-log.csv"
+                write_log(log, [{
+                    "finding_id": "F-previous", "initial_verdict": "true_positive",
+                    "id_scheme": "content-v1",
+                }])
+                sarif = root / "reviewed.sarif"
+                sarif.write_text(json.dumps(record_verdict.sarif_document([result])), encoding="utf-8")
+                before_log, before_sarif = log.read_bytes(), sarif.read_bytes()
+                proc = self.run_recorder([
+                    "--verdict", str(root / "verdict.json"), "--agent", "model-a",
+                    "--sarif-out", str(sarif), "--log", str(log),
+                ], root)
+                self.assertEqual(log.read_bytes(), before_log, "refusal must not append an audit row")
+                self.assertEqual(sarif.read_bytes(), before_sarif)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("SARIF ERROR", proc.stderr)
+                self.assertIn("results[0] is not a reviewed finding", proc.stderr)
+
     def test_distinct_models_are_accepted(self):
         with temp_tree({"placeholder": ""}) as root:
             self.setup_files(root)

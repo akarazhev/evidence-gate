@@ -73,6 +73,7 @@ class TestScanScript(unittest.TestCase):
             recorded = args_file.read_text(encoding="utf-8").split("\n")
         self.assertEqual(proc.returncode, 42, "the stand-in must be what ran")
         self.assertIn("--metrics=off", recorded)
+        self.assertIn("--disable-version-check", recorded)
         self.assertIn(str(root / "rules"), recorded)
         self.assertNotIn("NETWORK", proc.stderr)
 
@@ -85,6 +86,7 @@ class TestScanScript(unittest.TestCase):
         self.assertIn("NETWORK", proc.stderr)
         self.assertIn("docs/03-data-handling.md", proc.stderr)
         self.assertIn("--metrics=off", recorded)
+        self.assertIn("--disable-version-check", recorded)
         self.assertIn("p/security-audit", recorded)
 
 
