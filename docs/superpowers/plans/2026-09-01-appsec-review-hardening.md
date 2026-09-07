@@ -5070,6 +5070,69 @@ git diff --cached --check
 git commit -m "fix: close validation and scope bypasses"
 ```
 
+- [ ] **Step 5: Валидацию решает переданный флаг, а не разобранное значение**
+
+Правка из Step 1 закрыла `{}` и оставила `null`. Проверено: `--challenge` на файл
+с содержимым `null` даёт exit 0, пишет лог и SARIF и записывает в строку
+`validator=model-b` при пустом `challenge_result` — аудит утверждает валидатора,
+которого не было.
+
+Причина та же, что и в Step 1, и она пережила его исправление: ветвление шло по
+разобранному документу, а `null` разбирается в `None`. Правильный инвариант
+формулируется не про значение, а про намерение: **если инженер передал
+`--challenge`, документ обязан пройти схему.** Пустой, нулевой, любой — это
+предъявленный челлендж, и он либо валиден, либо отвергнут.
+
+```python
+    challenge_supplied = args.challenge is not None
+    challenge = (
+        json.loads(args.challenge.read_text(encoding="utf-8"))
+        if challenge_supplied
+        else None
+    )
+```
+
+и далее:
+
+```python
+    try:
+        validate(verdict, "verdict.schema.json")
+        # Presence of the flag decides this, never the parsed value. A file
+        # containing `null` parses to None and `{}` parses to a falsy dict;
+        # both looked like "no challenge" and sailed past the schema while the
+        # log recorded a validator for a challenge that was never checked.
+        if challenge_supplied:
+            validate(challenge, "challenge.schema.json")
+    except ValidationError as exc:
+```
+
+`validate` должна пережить не-словарь. `jsonschema` отвергнет `None` сама, но
+резервный валидатор упадёт на `key not in None` с `TypeError`, а не с
+`ValidationError`. Добавить первой строкой `_fallback_validate`:
+
+```python
+    if not isinstance(instance, dict):
+        raise ValidationError(
+            f"{name}: expected a JSON object, got {type(instance).__name__}"
+        )
+```
+
+Тесты — процессные, на обеих severities, потому что путь промотирования у них
+различается:
+
+- `--challenge` на файл с `null`, severity low: non-zero, лог не создан, SARIF не
+  создан;
+- то же для severity high;
+- `--challenge` на файл с `{}`: то же, как регрессия к Step 1;
+- валидный челлендж по-прежнему принимается.
+
+Проверки отсутствия файлов делать **внутри** блока `temp_tree`.
+
+Мутационная проверка: вернуть `if challenge:`, убедиться что оба теста с `null`
+краснеют на записанном логе, восстановить.
+
+Коммит отдельный, поверх Step 4: `fix: validate a supplied challenge whatever it parses to`.
+
 ---
 
 ### Task 22: Важные

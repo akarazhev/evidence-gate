@@ -260,13 +260,13 @@ class TestIndependenceControl(unittest.TestCase):
         (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
         (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
 
-    def test_empty_challenge_is_schema_refused_without_writes(self):
+    def assert_challenge_schema_refused_without_writes(self, document, severity):
         # Exercise the real CLI both with normal imports and with site packages
         # disabled, so the optional validator cannot hide a fallback bypass.
         for python_args in ([], ["-S"]):
-            with self.subTest(python_args=python_args), temp_tree({
-                "verdict.json": json.dumps(make_verdict(severity="high")),
-                "challenge.json": "{}",
+            with self.subTest(severity=severity, python_args=python_args), temp_tree({
+                "verdict.json": json.dumps(make_verdict(severity=severity)),
+                "challenge.json": document,
             }) as root:
                 log = root / "triage-log.csv"
                 sarif = root / "reviewed.sarif"
@@ -281,11 +281,21 @@ class TestIndependenceControl(unittest.TestCase):
                     ],
                     capture_output=True, text=True, cwd=root,
                 )
-                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-                self.assertIn("SCHEMA ERROR: challenge.schema.json", proc.stderr)
-                self.assertIn("required", proc.stderr)
                 self.assertFalse(log.exists(), "a refused run must not write the log")
                 self.assertFalse(sarif.exists(), "a refused run must not write SARIF")
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("SCHEMA ERROR: challenge.schema.json", proc.stderr)
+                self.assertIn("required" if document == "{}" else "object", proc.stderr)
+
+    def test_empty_challenge_is_schema_refused_without_writes(self):
+        for severity in ("low", "high"):
+            self.assert_challenge_schema_refused_without_writes("{}", severity)
+
+    def test_null_challenge_is_schema_refused_without_writes_low(self):
+        self.assert_challenge_schema_refused_without_writes("null", "low")
+
+    def test_null_challenge_is_schema_refused_without_writes_high(self):
+        self.assert_challenge_schema_refused_without_writes("null", "high")
 
     def test_same_model_is_refused_and_writes_nothing(self):
         with temp_tree({"placeholder": ""}) as root:

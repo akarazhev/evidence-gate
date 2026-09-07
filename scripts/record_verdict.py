@@ -111,7 +111,9 @@ def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
     against the schema growing a third.
     """
     if not isinstance(instance, dict):
-        raise ValidationError(f"{name}: expected an object")
+        raise ValidationError(
+            f"{name}: expected a JSON object, got {type(instance).__name__}"
+        )
 
     for key in schema.get("required", []):
         if key not in instance:
@@ -487,13 +489,20 @@ def main() -> int:
         return 1
 
     verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
+    challenge_supplied = args.challenge is not None
     challenge = (
-        json.loads(args.challenge.read_text(encoding="utf-8")) if args.challenge else None
+        json.loads(args.challenge.read_text(encoding="utf-8"))
+        if challenge_supplied
+        else None
     )
 
     try:
         validate(verdict, "verdict.schema.json")
-        if challenge is not None:
+        # Presence of the flag decides this, never the parsed value. A file
+        # containing `null` parses to None and `{}` parses to a falsy dict;
+        # both looked like "no challenge" and sailed past the schema while the
+        # log recorded a validator for a challenge that was never checked.
+        if challenge_supplied:
             validate(challenge, "challenge.schema.json")
     except ValidationError as exc:
         print(f"SCHEMA ERROR: {exc}", file=sys.stderr)

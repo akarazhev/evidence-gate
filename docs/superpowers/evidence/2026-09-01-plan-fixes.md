@@ -424,3 +424,19 @@
 - Why: The controller authorized this local completeness correction. It makes
   the controls' evidence reviewable and preserves the user's work without
   changing the specification, exclusion policy, or the scope of Tasks 22–23.
+
+## Task 21 review round 1: validate every supplied challenge
+
+- Before: Step 1's `if challenge is not None` closed the empty-object bypass
+  but skipped validation when an explicitly supplied challenge file contained
+  JSON `null`. Both low and high severity reached audit-log and SARIF writes.
+- After: The user-authored Step 5 captures `challenge_supplied` before parsing
+  and uses that flag to decide schema validation. Process tests cover `null`
+  and `{}` at low and high severity, assert write absence inside `temp_tree`,
+  and prove that restoring `if challenge:` writes the log for both null cases.
+  The Step 5 plan edit is preserved and included in its separate fix commit.
+- Why: A supplied document must pass its schema regardless of the parsed
+  value. The fallback already rejected non-dict inputs with `ValidationError`;
+  that existing guard is preserved and its diagnostic now names the parsed
+  type exactly as Step 5 specifies. The correction preserves the specification,
+  audit history, exclusion policy, and the scope of Tasks 22–23.
