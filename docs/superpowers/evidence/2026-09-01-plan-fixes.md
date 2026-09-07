@@ -294,3 +294,67 @@
 - Why: The strengthened assertion ensures the RED/GREEN cycle proves the
   decision enum rather than an unrelated process failure. This is an
   unambiguous test-hygiene correction with no production behavior change.
+
+## Task 19 files, evidence, and Task 18 backfill
+
+- Before: Task 19 listed only the production module and metrics tests, did not
+  stage its plan or evidence artifacts, and Task 18's green hash was pending.
+- After: Task 19 lists and stages its original plan, user-authorized spec,
+  red-test evidence, and plan-fixes evidence; the Task 18 green hash is
+  `79ae57f7e51d0deb25e2b61c8a7f5086bf3b14d7`; and genuine §5.3 RED evidence is
+  recorded with its final green hash pending Task 20.
+- Why: The execution brief assigns these documentation and staging backfills to
+  Task 19. They are unambiguous completeness corrections with no behavior or
+  control change.
+
+## Task 19 test responsibility and zero-minute coverage
+
+- Before: Metrics tests passed raw rows directly to `compute`, and no regression
+  proved that valid zero triage or decision minutes survived aggregation.
+- After: Tests explicitly call `compute(collapse(rows))`, matching the new
+  caller responsibility, and prove both zero totals remain recorded and render
+  as valid values.
+- Why: This is a local test-contract and falsification correction. The event
+  semantics themselves are user-authorized specification decisions, not plan
+  fixes.
+
+## Task 19 human-decision coverage population
+
+- Before: The Task 19 sketch divided every human decision, including one on a
+  `human_review` finding, by the number of decided findings.
+- After: Coverage counts only decided findings that carry a human decision,
+  while `human_decisions`, the breakdown, and accepted/(accepted+rejected)
+  accuracy retain all decisions. A mixed-state regression proves coverage is
+  50.0%, not inflated beyond its decided population.
+- Why: §5.4 defines coverage among decided findings. This isolates the coverage
+  numerator without changing the prescribed decision count, breakdown, or
+  accuracy denominator.
+
+## Task 19 metrics summary terminology
+
+- Before: The metrics module introduced four numbers and called its second
+  measure false-positive rate; Section 4 referred to the stale false-positive
+  number.
+- After: The summary presents five measures including dismissal rate and human
+  accuracy, and the Section 4 warning refers to the dismissal number.
+- Why: This is a local stale-prose correction required by §5.4. It does not
+  alter metric computation.
+
+## Task 19 render-preservation fix
+
+- Before: The Task 19 rebuild replaced `render()` broadly and silently removed
+  established timing guidance, validation alarms, parked-proof reporting, and
+  evidence-quality/footer output.
+- After: Task 19 restores every render section not explicitly replaced by the
+  dismissal and ground-truth blocks, with output-level regressions for zero and
+  high disagreement, same-model validation, and parked runtime proof.
+- Why: This is a local preservation correction. It restores existing safeguards
+  without changing the user-authored event semantics.
+
+## Task 19 no-timing guidance preservation
+
+- Before: The rebuilt no-timing branch was shortened to `No timings recorded.`
+- After: It restores the `--minutes` recording instruction and the warning that
+  the programme lacks its primary success measure; an observable regression
+  requires both phrases.
+- Why: This is an unambiguous preservation of pre-Task-19 reporting behavior.

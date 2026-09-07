@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""Compute program metrics from the triage log.
-
-Four numbers decide whether this workflow earns its place. Everything else is
-interesting but not decisive:
-
-  1. Triage time per finding      - the primary effect; should fall
-  2. False-positive rate          - whether developers keep trusting it
-  3. Confirmed findings           - whether the drop in FP came from real signal
-  4. Disagreement rate            - whether the second pass is doing any work
-
-Metric 4 is the one teams forget. If triage and validation always agree, the
-validation pass is a rubber stamp and the accuracy gain is illusory.
-
-Usage:
-    metrics.py
-    metrics.py --since 2026-08-01
-    metrics.py --json
-"""
-
+"""Compute triage, dismissal, validation, and human-accuracy metrics."""
 from __future__ import annotations
 
 import argparse
@@ -31,202 +13,212 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = REPO_ROOT / "findings" / "triage-log.csv"
+DECISION_FIELDS = (
+    "human_decision", "human_decision_at", "human_decision_by", "human_rationale",
+)
 
 
-def load_rows(path: Path, since: str | None) -> list[dict]:
+def load_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with path.open(encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
-    if since:
-        cutoff = datetime.fromisoformat(since)
-        kept = []
-        for row in rows:
-            stamp = (row.get("reviewed_at") or "").replace("Z", "+00:00")
-            try:
-                dt = datetime.fromisoformat(stamp)
-                if dt.replace(tzinfo=None) >= cutoff:
-                    kept.append(row)
-            except ValueError:
-                continue
-        return kept
-    return rows
+        return list(csv.DictReader(fh))
+
+
+def _is_verdict_row(row: dict) -> bool:
+    return bool(row.get("initial_verdict"))
+
+
+def _minutes(row: dict) -> float | None:
+    try:
+        return float(row["minutes_spent"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def collapse(rows: list[dict]) -> list[dict]:
+    """Collapse append-only events with verdict replacement and decision patches."""
+    verdicts: dict[str, dict] = {}
+    decisions: dict[str, dict] = {}
+    triage_minutes: dict[str, list[float]] = {}
+    decision_minutes: dict[str, list[float]] = {}
+    verdict_rows_seen: Counter = Counter()
+    last_event: dict[str, str] = {}
+    for _, row in sorted(enumerate(rows), key=lambda pair: (pair[1].get("reviewed_at", ""), pair[0])):
+        finding_id = row.get("finding_id")
+        if not finding_id:
+            continue
+        last_event[finding_id] = row.get("reviewed_at", "")
+        minutes = _minutes(row)
+        if _is_verdict_row(row):
+            verdicts[finding_id] = {key: value for key, value in row.items() if key not in DECISION_FIELDS}
+            verdict_rows_seen[finding_id] += 1
+            if minutes is not None:
+                triage_minutes.setdefault(finding_id, []).append(minutes)
+        elif row.get("human_decision"):
+            decisions[finding_id] = {key: row.get(key, "") for key in DECISION_FIELDS}
+            if minutes is not None:
+                decision_minutes.setdefault(finding_id, []).append(minutes)
+
+    records = []
+    for finding_id in sorted(verdicts.keys() | decisions.keys()):
+        record = dict(verdicts.get(finding_id, {}))
+        record.update(decisions.get(finding_id, {}))
+        record["finding_id"] = finding_id
+        record["last_event_at"] = last_event.get(finding_id, "")
+        triage = triage_minutes.get(finding_id, [])
+        decision = decision_minutes.get(finding_id, [])
+        record["triage_minutes_total"] = sum(triage) if triage else None
+        record["decision_minutes_total"] = sum(decision) if decision else None
+        record["revision_count"] = max(0, verdict_rows_seen[finding_id] - 1)
+        records.append(record)
+    return records
+
+
+def filter_since(records: list[dict], since: str | None) -> list[dict]:
+    if not since:
+        return records
+    cutoff = datetime.fromisoformat(since)
+    kept = []
+    for record in records:
+        try:
+            moment = datetime.fromisoformat((record.get("last_event_at") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if moment.replace(tzinfo=None) >= cutoff:
+            kept.append(record)
+    return kept
 
 
 def compute(rows: list[dict]) -> dict:
     total = len(rows)
-    if total == 0:
+    if not total:
         return {"total": 0}
-
-    states = Counter(r["final_state"] for r in rows)
-    initial = Counter(r["initial_verdict"] for r in rows)
-    challenges = Counter(r["challenge_result"] for r in rows if r["challenge_result"])
-    evidence = Counter(r["evidence_level"] for r in rows if r["evidence_level"])
-    severity = Counter(
-        r["severity"] for r in rows if r["severity"] and r["final_state"] == "confirmed"
-    )
-
-    times = []
-    for r in rows:
-        try:
-            times.append(float(r["minutes_spent"]))
-        except (ValueError, TypeError, KeyError):
-            continue
-
+    states = Counter(row.get("final_state", "") for row in rows)
+    initial = Counter(row.get("initial_verdict", "") for row in rows)
+    challenges = Counter(row.get("challenge_result", "") for row in rows if row.get("challenge_result"))
+    evidence = Counter(row.get("evidence_level", "") for row in rows if row.get("evidence_level"))
+    severity = Counter(row.get("severity", "") for row in rows if row.get("severity") and row.get("final_state") == "confirmed")
+    times = [row["triage_minutes_total"] for row in rows if row.get("triage_minutes_total") is not None]
+    decision_times = [row["decision_minutes_total"] for row in rows if row.get("decision_minutes_total") is not None]
     decided = states["confirmed"] + states["dismissed"]
+    decisions = Counter(row.get("human_decision") for row in rows if row.get("human_decision"))
+    judged = decisions["accepted"] + decisions["rejected"]
+    covered = sum(1 for row in rows if row.get("human_decision") and row.get("final_state") in ("confirmed", "dismissed"))
+    dismissal = states["dismissed"] / decided * 100 if decided else None
+    coverage = covered / decided * 100 if decided else None
+    accuracy = decisions["accepted"] / judged * 100 if judged and decided else None
     challenged = sum(challenges.values())
-    disagreements = challenges["refuted"] + challenges["inconclusive"]
-
-    # FP rate measured over decided findings only. Including undecided findings
-    # in the denominator flatters the number, because parked findings are not
-    # evidence of precision.
-    fp_rate = (states["dismissed"] / decided * 100) if decided else None
-
-    same_model = sum(
-        1 for r in rows
-        if r.get("agent") and r.get("validator") and r["agent"] == r["validator"]
-    )
-
     return {
-        "total": total,
-        "states": dict(states),
-        "initial_verdicts": dict(initial),
-        "challenge_results": dict(challenges),
-        "evidence_levels": dict(evidence),
-        "confirmed_by_severity": dict(severity),
-        "decided": decided,
-        "undecided": total - decided,
-        "false_positive_rate_pct": round(fp_rate, 1) if fp_rate is not None else None,
+        "total": total, "states": dict(states), "initial_verdicts": dict(initial),
+        "challenge_results": dict(challenges), "evidence_levels": dict(evidence),
+        "confirmed_by_severity": dict(severity), "decided": decided, "undecided": total - decided,
+        "dismissal_rate_pct": round(dismissal, 1) if dismissal is not None else None,
+        "revisions": sum(row.get("revision_count", 0) for row in rows),
+        "human_decisions": sum(decisions.values()), "human_decision_breakdown": dict(decisions),
+        "human_decision_coverage_pct": round(coverage, 1) if coverage is not None else None,
+        "agent_accuracy_pct": round(accuracy, 1) if accuracy is not None else None,
         "median_minutes": round(statistics.median(times), 1) if times else None,
         "mean_minutes": round(statistics.mean(times), 1) if times else None,
-        "total_hours": round(sum(times) / 60, 1) if times else None,
-        "timed_findings": len(times),
-        "challenge_coverage_pct": round(challenged / total * 100, 1) if total else 0,
-        "disagreement_rate_pct": (
-            round(disagreements / challenged * 100, 1) if challenged else None
-        ),
-        "same_model_validations": same_model,
-        "runtime_proof_parked": sum(
-            1 for r in rows if str(r.get("requires_runtime_proof", "")).lower() == "true"
-        ),
+        "total_hours": round(sum(times) / 60, 1) if times else None, "timed_findings": len(times),
+        "decision_minutes_total": round(sum(decision_times), 1) if decision_times else None,
+        "challenge_coverage_pct": round(challenged / total * 100, 1),
+        "disagreement_rate_pct": round((challenges["refuted"] + challenges["inconclusive"]) / challenged * 100, 1) if challenged else None,
+        "same_model_validations": sum(1 for row in rows if row.get("agent") and row.get("validator") and row["agent"] == row["validator"]),
+        "runtime_proof_parked": sum(1 for row in rows if str(row.get("requires_runtime_proof", "")).lower() == "true"),
     }
 
 
 def render(m: dict) -> str:
     if m["total"] == 0:
-        return ("No reviews recorded yet.\n\n"
-                "Run a triage, record the verdict, then come back.")
-
-    out = []
+        return "No reviews recorded yet.\n\nRun a triage, record the verdict, then come back."
+    out: list[str] = []
     add = out.append
-
-    add("=" * 58)
-    add("  APPSEC REVIEW METRICS")
-    add("=" * 58)
-    add("")
+    add("=" * 58); add("  APPSEC REVIEW METRICS"); add("=" * 58); add("")
     add(f"  Findings reviewed        {m['total']}")
-    add(f"  Reached a decision       {m['decided']}  "
-        f"({m['decided'] / m['total'] * 100:.0f}%)")
-    add(f"  Still open               {m['undecided']}")
-    add("")
-
-    add("-" * 58)
-    add("  1. TRIAGE TIME  (target: falling)")
-    add("-" * 58)
+    add(f"  Reached a decision       {m['decided']}  ({m['decided'] / m['total'] * 100:.0f}%)")
+    add(f"  Still open               {m['undecided']}"); add("")
+    add("-" * 58); add("  1. TRIAGE TIME  (target: falling)"); add("-" * 58)
     if m["median_minutes"] is not None:
         add(f"  Median                   {m['median_minutes']} min")
         add(f"  Mean                     {m['mean_minutes']} min")
-        add(f"  Engineer time total      {m['total_hours']} h "
-            f"over {m['timed_findings']} findings")
+        add(f"  Engineer time total      {m['total_hours']} h over {m['timed_findings']} findings")
     else:
         add("  No timings recorded. Pass --minutes to record_verdict.py;")
         add("  without it this metric cannot be computed and the")
         add("  programme has no primary success measure.")
+    if m["decision_minutes_total"] is not None:
+        add(f"  Human decision time      {m['decision_minutes_total']} min (separate from triage)")
     add("")
-
-    add("-" * 58)
-    add("  2. FALSE-POSITIVE RATE  (of decided findings)")
-    add("-" * 58)
-    if m["false_positive_rate_pct"] is not None:
-        add(f"  Dismissed as FP          {m['false_positive_rate_pct']}%")
-        add(f"  Confirmed real           {100 - m['false_positive_rate_pct']:.1f}%")
-    else:
+    add("-" * 58); add("  2. DISMISSAL RATE  (of decided findings)"); add("-" * 58)
+    if m["dismissal_rate_pct"] is None:
         add("  Nothing decided yet.")
-    add("")
-
-    add("-" * 58)
-    add("  3. CONFIRMED FINDINGS  (is the signal real?)")
-    add("-" * 58)
-    if m["confirmed_by_severity"]:
-        order = ["critical", "high", "medium", "low", "info"]
-        for sev in order:
-            if sev in m["confirmed_by_severity"]:
-                add(f"  {sev:<24} {m['confirmed_by_severity'][sev]}")
     else:
-        add("  None confirmed yet.")
+        add(f"  Dismissed by the pipeline {m['dismissal_rate_pct']}%")
+        add("  This is what the pipeline did, not how often it was right.")
+        add("  Accuracy is section 5 and needs human decisions.")
+    add("")
+    add("-" * 58); add("  3. CONFIRMED FINDINGS  (is the signal real?)"); add("-" * 58)
+    if m["confirmed_by_severity"]:
+        for level in ("critical", "high", "medium", "low", "info"):
+            if level in m["confirmed_by_severity"]: add(f"  {level:<24} {m['confirmed_by_severity'][level]}")
+    else: add("  None confirmed yet.")
     if m["runtime_proof_parked"]:
         add(f"  Parked awaiting proof    {m['runtime_proof_parked']}")
     add("")
-
-    add("-" * 58)
-    add("  4. VALIDATION INDEPENDENCE  (is pass 2 doing work?)")
-    add("-" * 58)
+    add("-" * 58); add("  4. VALIDATION INDEPENDENCE  (is pass 2 doing work?)"); add("-" * 58)
     add(f"  Challenge coverage       {m['challenge_coverage_pct']}%")
     if m["disagreement_rate_pct"] is not None:
         rate = m["disagreement_rate_pct"]
         add(f"  Disagreement rate        {rate}%")
         if rate == 0:
-            add("")
-            add("  ! Zero disagreement. Either the validation pass is")
+            add(""); add("  ! Zero disagreement. Either the validation pass is")
             add("    rubber-stamping, or it runs on the same model and")
             add("    inherits the same blind spots. Investigate before")
-            add("    trusting the false-positive number above.")
+            add("    trusting the dismissal number above.")
         elif rate > 40:
-            add("")
-            add("  ! High disagreement. The triage prompt or the trust")
+            add(""); add("  ! High disagreement. The triage prompt or the trust")
             add("    boundaries in CLAUDE.md are probably underspecified.")
     else:
         add("  No challenges recorded.")
     if m["same_model_validations"]:
-        add("")
-        add(f"  ! {m['same_model_validations']} validation(s) ran on the same")
+        add(""); add(f"  ! {m['same_model_validations']} validation(s) ran on the same")
         add("    model as the triage. Independence is the point.")
     add("")
-
-    add("-" * 58)
-    add("  EVIDENCE QUALITY")
-    add("-" * 58)
+    add("-" * 58); add("  5. AGENT ACCURACY  (ground truth)"); add("-" * 58)
+    if m["human_decisions"]:
+        add(f"  Human decisions recorded {m['human_decisions']}")
+        for name in ("accepted", "rejected", "escalated"):
+            if name in m["human_decision_breakdown"]: add(f"  {name:<24} {m['human_decision_breakdown'][name]}")
+        if m["human_decision_coverage_pct"] is None:
+            add("  ! No findings have reached a decided state, so coverage and")
+            add("    accuracy have no denominator. The counts above stand; the")
+            add("    rates are not computed rather than guessed.")
+        else:
+            add(f"  Coverage                 {m['human_decision_coverage_pct']}%")
+            if m["agent_accuracy_pct"] is not None: add(f"  Agent accuracy           {m['agent_accuracy_pct']}%")
+            if m["human_decision_coverage_pct"] < 50: add("  ! Accuracy rests on a biased subset.")
+    else: add("  No human decisions recorded.")
+    if m["revisions"]: add(f"  Verdicts revised         {m['revisions']}")
+    add("")
+    add("-" * 58); add("  EVIDENCE QUALITY"); add("-" * 58)
     for level in ("traced", "partial", "pattern"):
         if level in m["evidence_levels"]:
             count = m["evidence_levels"][level]
             add(f"  {level:<24} {count}  ({count / m['total'] * 100:.0f}%)")
-    add("")
-    add("  A low 'traced' share means the agent is not being given")
+    add(""); add("  A low 'traced' share means the agent is not being given")
     add("  enough context to follow data flows end to end.")
-    add("")
-
-    add("=" * 58)
-    add("  Graduation criteria: docs/07-graduation.md")
-    add("=" * 58)
+    add(""); add("=" * 58); add("  Graduation criteria: docs/07-graduation.md"); add("=" * 58)
     return "\n".join(out)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--log", type=Path, default=LOG_PATH)
-    parser.add_argument("--since", help="ISO date, e.g. 2026-08-01")
-    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--log", type=Path, default=LOG_PATH); parser.add_argument("--since"); parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-
-    rows = load_rows(args.log, args.since)
-    m = compute(rows)
-
-    if args.json:
-        print(json.dumps(m, indent=2))
-    else:
-        print(render(m))
+    m = compute(filter_since(collapse(load_rows(args.log)), args.since))
+    print(json.dumps(m, indent=2) if args.json else render(m))
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__": sys.exit(main())

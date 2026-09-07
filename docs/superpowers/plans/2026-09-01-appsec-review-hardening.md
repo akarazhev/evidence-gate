@@ -3895,6 +3895,10 @@ git commit -m "feat: record the human decision as programme ground truth"
 **Files:**
 - Modify: `scripts/metrics.py:56-211`
 - Modify: `tests/test_metrics.py`
+- Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+- Modify: `docs/superpowers/specs/2026-09-01-appsec-review-hardening-design.md`
 
 **Interfaces:**
 - Consumes: колонки из задач 13, 17, 18.
@@ -3938,7 +3942,15 @@ class TestCollapse(unittest.TestCase):
         self.assertEqual(len(collapsed), 1)
         self.assertEqual(collapsed[0]["final_state"], "dismissed")
 
-    def test_revisions_are_counted(self):
+    def test_missing_or_malformed_timestamps_have_a_stable_fallback(self):
+        rows = [
+            row(final_state="confirmed", reviewed_at="not-a-timestamp"),
+            row(final_state="dismissed", reviewed_at=""),
+        ]
+        self.assertEqual(metrics.collapse(rows),
+                         metrics.collapse(list(reversed(rows))))
+
+    def test_revisions_are_counted_before_collapse(self):
         rows = [
             row(),
             row(reviewed_at="2026-09-02T10:00:00+00:00", supersedes="2026-09-01T10:00:00+00:00"),
@@ -3970,6 +3982,18 @@ class TestAgentAccuracy(unittest.TestCase):
     def test_no_decisions_leaves_accuracy_undefined(self):
         self.assertIsNone(self.compute([row()])["agent_accuracy_pct"])
 
+    def test_human_review_decisions_do_not_inflate_decided_coverage(self):
+        m = self.compute([
+            row(finding_id="F-1", human_decision="accepted"),
+            row(finding_id="F-2", final_state="dismissed"),
+            row(finding_id="F-3", final_state="human_review",
+                human_decision="rejected"),
+        ])
+        self.assertEqual(m["human_decisions"], 2)
+        self.assertEqual(m["human_decision_coverage_pct"], 50.0)
+        self.assertLessEqual(m["human_decision_coverage_pct"], 100.0)
+        self.assertEqual(m["agent_accuracy_pct"], 50.0)
+
     def test_low_coverage_warns_in_the_render(self):
         m = self.compute([
             row(finding_id=f"F-{i}", human_decision="accepted" if i == 0 else "")
@@ -3992,103 +4016,226 @@ Expected: FAIL — `collapse` отсутствует, ключ переимен�
 
 - [ ] **Step 3: Схлопнуть строки в находки**
 
+Два типа строк означают разное и сливаются по-разному. Строка вердикта замещает
+вердикт целиком; строка решения накладывает на него поля решения. Ничья по
+времени разрешается позицией в логе.
+
 В `scripts/metrics.py` добавить перед `compute`:
 
 ```python
+DECISION_FIELDS = (
+    "human_decision", "human_decision_at", "human_decision_by", "human_rationale",
+)
+
+
+def _is_verdict_row(row: dict) -> bool:
+    return bool(row.get("initial_verdict"))
+
+
+def _minutes(row: dict) -> float | None:
+    try:
+        return float(row["minutes_spent"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def collapse(rows: list[dict]) -> list[dict]:
     """One record per finding.
 
-    The triage log is append-only by design: a superseded verdict and a human
-    decision both arrive as additional rows carrying the same finding_id.
-    Counting rows would report one finding as several and quietly inflate every
-    total, so rows are folded onto the finding they describe. Empty values never
-    overwrite populated ones, which is what lets a later decision row merge into
-    an earlier verdict row without erasing it.
+    Two row types with different merge rules, because they mean different
+    things. A verdict row REPLACES the verdict wholesale, empty fields
+    included: re-triaging without a challenge must not inherit the previous
+    run's challenge_result, or the log would assert a second pass that never
+    ran. A human-decision row PATCHES the decision fields onto whichever
+    verdict stands.
+
+    Ties on reviewed_at fall back to position in the log. Ties are ordinary,
+    not exotic: reviewed_at comes from the verdict JSON, so re-recording the
+    same file repeats it. The log is append-only and written in order, which
+    makes position the only surviving evidence of sequence.
     """
-    by_id: dict[str, dict] = {}
-    # Fold in timestamp order, not input order. The log is normally
-    # chronological, but --since filtering and hand edits can reorder it, and
-    # letting input order decide would silently promote a superseded verdict
-    # over the one that replaced it.
-    for row in sorted(rows, key=lambda r: r.get("reviewed_at", "")):
+    ordered = sorted(
+        enumerate(rows),
+        key=lambda pair: (pair[1].get("reviewed_at", ""), pair[0]),
+    )
+
+    verdicts: dict[str, dict] = {}
+    decisions: dict[str, dict] = {}
+    triage_minutes: dict[str, list] = {}
+    decision_minutes: dict[str, list] = {}
+    last_event: dict[str, str] = {}
+
+    for _, row in ordered:
         fid = row.get("finding_id")
         if not fid:
             continue
-        merged = dict(by_id.get(fid, {}))
-        merged.update({k: v for k, v in row.items() if v})
-        by_id[fid] = merged
-    return list(by_id.values())
+
+        stamp = row.get("reviewed_at", "")
+        if stamp > last_event.get(fid, ""):
+            last_event[fid] = stamp
+
+        minutes = _minutes(row)
+        if _is_verdict_row(row):
+            verdicts[fid] = {
+                k: v for k, v in row.items() if k not in DECISION_FIELDS
+            }
+            if minutes is not None:
+                triage_minutes.setdefault(fid, []).append(minutes)
+        elif row.get("human_decision"):
+            decisions[fid] = {k: row.get(k, "") for k in DECISION_FIELDS}
+            if minutes is not None:
+                decision_minutes.setdefault(fid, []).append(minutes)
+
+    collapsed = []
+    for fid in sorted(verdicts.keys() | decisions.keys()):
+        record = dict(verdicts.get(fid, {}))
+        record.update(decisions.get(fid, {}))
+        record["finding_id"] = fid
+        record["last_event_at"] = last_event.get(fid, "")
+        triage = triage_minutes.get(fid, [])
+        decided = decision_minutes.get(fid, [])
+        record["triage_minutes_total"] = sum(triage) if triage else None
+        record["decision_minutes_total"] = sum(decided) if decided else None
+        collapsed.append(record)
+    return collapsed
 ```
 
-- [ ] **Step 4: Пересчитать метрики**
+- [ ] **Step 4: Перенести `--since` за схлопывание**
 
-В `compute` первой строкой:
+Отсев строк до схлопывания оставляет свежую строку решения без её вердикта, и
+находка входит в метрики без состояния, уровня доказательности и времени.
+Фильтровать надо находки, а не строки.
+
+Убрать блок `if since:` из `load_rows` целиком, оставив чтение:
 
 ```python
-    revisions = sum(1 for r in rows if r.get("supersedes"))
-    rows = collapse(rows)
+def load_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
 ```
 
-Переименовать величину и добавить точность перед `return`:
+И добавить фильтр по находкам:
 
 ```python
+def filter_since(records: list[dict], since: str | None) -> list[dict]:
+    """Keep findings whose most recent event falls in the window.
+
+    Applied after collapse, never before. Filtering raw rows would strand a
+    recent decision row without the older verdict row it describes, and that
+    finding would reach the metrics with no state and no timing - counted, but
+    counted as nothing.
+
+    A finding enters whole or not at all: if its latest event is in the window,
+    its entire history comes with it, because "decided in August" is
+    meaningless without the July verdict it decided on.
+    """
+    if not since:
+        return records
+    cutoff = datetime.fromisoformat(since)
+    kept = []
+    for record in records:
+        stamp = (record.get("last_event_at") or "").replace("Z", "+00:00")
+        try:
+            moment = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if moment.replace(tzinfo=None) >= cutoff:
+            kept.append(record)
+    return kept
+```
+
+В `main` заменить получение строк:
+
+```python
+    records = filter_since(collapse(load_rows(args.log)), args.since)
+    m = compute(records)
+```
+
+`compute` теперь принимает уже схлопнутые записи, поэтому убрать из него вызов
+`collapse` и считать `revisions` до схлопывания — перенести подсчёт в `collapse`,
+записывая в каждую запись `revision_count`, и суммировать в `compute`.
+
+```python
+        record["revision_count"] = max(0, len(triage_minutes.get(fid, [])) - 1)
+```
+
+Это приблизительная величина: она считает только пересмотры с указанным
+временем. Точнее — считать строки вердикта; для этого вести отдельный счётчик
+`verdict_rows_seen[fid]` и записывать `len - 1`.
+
+- [ ] **Step 5: Пересчитать величины**
+
+В `compute` заменить блок расчёта:
+
+```python
+    total = len(rows)
+    if total == 0:
+        return {"total": 0}
+
+    revisions = sum(r.get("revision_count", 0) for r in rows)
+    ...
     dismissal_rate = (states["dismissed"] / decided * 100) if decided else None
 
-    decisions = Counter(r.get("human_decision") for r in rows if r.get("human_decision"))
+    decisions = Counter(
+        r.get("human_decision") for r in rows if r.get("human_decision")
+    )
     judged = decisions["accepted"] + decisions["rejected"]
-    accuracy = (decisions["accepted"] / judged * 100) if judged else None
-    coverage = (sum(decisions.values()) / decided * 100) if decided else None
+    covered_decided = sum(
+        1 for r in rows if r.get("human_decision") and r["final_state"] in ("confirmed", "dismissed")
+    )
+    coverage = (covered_decided / decided * 100) if decided else None
+    # No decided findings means no denominator, so no rate. The counts below
+    # are facts and still print; the derived share does not, because there is
+    # nothing to divide by. Same rule as evidence_level: report what was
+    # established, withhold the rest.
+    accuracy = (decisions["accepted"] / judged * 100) if (judged and decided) else None
 ```
 
-В возвращаемом словаре заменить `"false_positive_rate_pct"` на:
+Времена берутся из схлопнутых записей:
 
 ```python
-        "dismissal_rate_pct": round(dismissal_rate, 1) if dismissal_rate is not None else None,
-        "revisions": revisions,
-        "human_decisions": sum(decisions.values()),
-        "human_decision_breakdown": dict(decisions),
-        "human_decision_coverage_pct": round(coverage, 1) if coverage is not None else None,
-        "agent_accuracy_pct": round(accuracy, 1) if accuracy is not None else None,
+    times = [
+        r["triage_minutes_total"] for r in rows if r.get("triage_minutes_total")
+    ]
+    decision_times = [
+        r["decision_minutes_total"] for r in rows if r.get("decision_minutes_total")
+    ]
 ```
 
-- [ ] **Step 5: Переписать вывод**
+В возвращаемый словарь добавить `"decision_minutes_total"` рядом с остальными
+временами и `"revisions": revisions`.
 
-Заменить заголовок блока 2 и его содержимое:
+- [ ] **Step 5b: Переписать вывод**
 
-```python
-    add("-" * 58)
-    add("  2. DISMISSAL RATE  (of decided findings)")
-    add("-" * 58)
-    if m["dismissal_rate_pct"] is not None:
-        add(f"  Dismissed by the pipeline {m['dismissal_rate_pct']}%")
-        add("")
-        add("  This is what the pipeline did, not how often it was right.")
-        add("  Accuracy is section 5 and needs human decisions.")
-    else:
-        add("  Nothing decided yet.")
-    add("")
-```
+Блок 2 переименовать в `DISMISSAL RATE` с пояснением, что это действие
+конвейера, а не его правота, и ссылкой на блок 5.
 
-И добавить новый блок перед разделом EVIDENCE QUALITY:
+Блок 5 `AGENT ACCURACY (ground truth)` печатает счётчики всегда, а долю — только
+когда она определена:
 
 ```python
-    add("-" * 58)
-    add("  5. AGENT ACCURACY  (ground truth)")
-    add("-" * 58)
-    coverage = m["human_decision_coverage_pct"]
     if m["human_decisions"]:
-        add(f"  Human decisions recorded {m['human_decisions']}"
-            f"  (coverage {coverage}%)")
+        add(f"  Human decisions recorded {m['human_decisions']}")
         for name in ("accepted", "rejected", "escalated"):
             if name in m["human_decision_breakdown"]:
                 add(f"  {name:<24} {m['human_decision_breakdown'][name]}")
-        if m["agent_accuracy_pct"] is not None:
-            add(f"  Agent accuracy           {m['agent_accuracy_pct']}%")
-        if coverage is not None and coverage < 50:
+        coverage = m["human_decision_coverage_pct"]
+        if coverage is None:
             add("")
-            add("  ! Fewer than half the decided findings carry a human")
-            add("    decision, so the accuracy above rests on a biased subset.")
-            add("    Record decisions before quoting this number to anyone.")
+            add("  ! No findings have reached a decided state, so coverage and")
+            add("    accuracy have no denominator. The counts above stand; the")
+            add("    rates are not computed rather than guessed.")
+        else:
+            add(f"  Coverage                 {coverage}%")
+            if m["agent_accuracy_pct"] is not None:
+                add(f"  Agent accuracy           {m['agent_accuracy_pct']}%")
+            if coverage < 50:
+                add("")
+                add("  ! Fewer than half the decided findings carry a human")
+                add("    decision, so the accuracy above rests on a biased")
+                add("    subset. Record decisions before quoting it.")
     else:
         add("  No human decisions recorded. Without them the programme can")
         add("  describe what the pipeline did but not whether it was right,")
@@ -4097,8 +4244,116 @@ def collapse(rows: list[dict]) -> list[dict]:
     if m["revisions"]:
         add("")
         add(f"  Verdicts revised         {m['revisions']}")
-    add("")
 ```
+
+Отдельной строкой в блоке 1 — время решений, чтобы его не путали с триажем:
+
+```python
+    if m["decision_minutes_total"] is not None:
+        add(f"  Human decision time      {m['decision_minutes_total']} min "
+            "(separate from triage)")
+```
+
+All render sections not explicitly replaced above remain intact. Preserve the
+full timing guidance, confirmed severity and parked-proof reporting, validation
+independence alarms (including same-model and high-disagreement warnings),
+evidence-quality percentages/guidance, and the header/totals/footer. Add
+observable regressions for zero/high disagreement, same-model validation, and
+parked runtime proof rendering. The no-timing regression must retain both the
+`--minutes` instruction and the primary-success-measure warning.
+
+- [ ] **Step 5c: Тесты на принятые решения**
+
+Дописать в `tests/test_metrics.py`:
+
+```python
+class TestCollapseSemantics(unittest.TestCase):
+    def test_new_verdict_does_not_inherit_the_old_challenge(self):
+        first = row(challenge_result="upheld", validator="model-b")
+        second = row(
+            reviewed_at="2026-09-02T10:00:00+00:00",
+            challenge_result="",
+            validator="",
+            supersedes="2026-09-01T10:00:00+00:00",
+        )
+        collapsed = metrics.collapse([first, second])
+        self.assertEqual(len(collapsed), 1)
+        self.assertEqual(collapsed[0]["challenge_result"], "")
+        self.assertEqual(collapsed[0]["validator"], "")
+
+    def test_decision_survives_a_later_verdict_revision(self):
+        collapsed = metrics.collapse([
+            row(),
+            {"finding_id": "F-000000000001", "human_decision": "rejected",
+             "reviewed_at": "2026-09-02T10:00:00+00:00"},
+            row(reviewed_at="2026-09-03T10:00:00+00:00", final_state="dismissed"),
+        ])
+        self.assertEqual(collapsed[0]["human_decision"], "rejected")
+        self.assertEqual(collapsed[0]["final_state"], "dismissed")
+
+    def test_equal_timestamps_break_by_log_position(self):
+        first = row(final_state="confirmed")
+        second = row(final_state="dismissed")
+        self.assertEqual(
+            metrics.collapse([first, second])[0]["final_state"], "dismissed"
+        )
+        self.assertEqual(
+            metrics.collapse([second, first])[0]["final_state"], "confirmed"
+        )
+
+    def test_triage_minutes_sum_across_revisions(self):
+        collapsed = metrics.collapse([
+            row(minutes_spent="10"),
+            row(reviewed_at="2026-09-02T10:00:00+00:00", minutes_spent="4"),
+        ])
+        self.assertEqual(collapsed[0]["triage_minutes_total"], 14.0)
+
+    def test_decision_minutes_stay_separate(self):
+        collapsed = metrics.collapse([
+            row(minutes_spent="10"),
+            {"finding_id": "F-000000000001", "human_decision": "accepted",
+             "minutes_spent": "3", "reviewed_at": "2026-09-02T10:00:00+00:00"},
+        ])
+        self.assertEqual(collapsed[0]["triage_minutes_total"], 10.0)
+        self.assertEqual(collapsed[0]["decision_minutes_total"], 3.0)
+
+
+class TestSinceSelectsFindings(unittest.TestCase):
+    def test_a_finding_enters_whole_or_not_at_all(self):
+        # Verdict in July, decision in September. Filtering rows would keep the
+        # decision and drop the verdict, leaving a stateless finding.
+        records = metrics.collapse([
+            row(reviewed_at="2026-07-01T10:00:00+00:00", final_state="confirmed"),
+            {"finding_id": "F-000000000001", "human_decision": "accepted",
+             "reviewed_at": "2026-09-01T10:00:00+00:00"},
+        ])
+        kept = metrics.filter_since(records, "2026-08-01")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["final_state"], "confirmed")
+        self.assertEqual(kept[0]["human_decision"], "accepted")
+
+    def test_untouched_findings_fall_outside_the_window(self):
+        records = metrics.collapse([row(reviewed_at="2026-07-01T10:00:00+00:00")])
+        self.assertEqual(metrics.filter_since(records, "2026-08-01"), [])
+
+
+class TestUndefinedDenominator(unittest.TestCase):
+    def test_accuracy_is_withheld_when_nothing_is_decided(self):
+        m = metrics.compute(metrics.collapse([
+            row(final_state="human_review", challenge_result="refuted"),
+            {"finding_id": "F-000000000001", "human_decision": "accepted",
+             "reviewed_at": "2026-09-02T10:00:00+00:00"},
+        ]))
+        self.assertEqual(m["decided"], 0)
+        self.assertIsNone(m["human_decision_coverage_pct"])
+        self.assertIsNone(m["agent_accuracy_pct"])
+        self.assertEqual(m["human_decisions"], 1)
+        self.assertIn("not computed rather than guessed", metrics.render(m))
+```
+
+Существующие тесты, вызывающие `metrics.compute(rows)` на сырых строках, теперь
+обязаны передавать `metrics.collapse(rows)`. Обновить их — это не смена
+поведения, а перенос ответственности за схлопывание из `compute` в вызывающего.
 
 - [ ] **Step 6: Прогнать и закоммитить**
 
@@ -4106,7 +4361,11 @@ Run: `make test`
 Expected: всё зелёное.
 
 ```bash
-git add scripts/metrics.py tests/test_metrics.py
+git add scripts/metrics.py tests/test_metrics.py \
+  docs/superpowers/plans/2026-09-01-appsec-review-hardening.md \
+  docs/superpowers/specs/2026-09-01-appsec-review-hardening-design.md \
+  docs/superpowers/evidence/2026-09-01-red-tests.md \
+  docs/superpowers/evidence/2026-09-01-plan-fixes.md
 git commit -m "feat: collapse rows into findings and report agent accuracy"
 ```
 
