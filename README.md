@@ -120,6 +120,7 @@ Documentation, in reading order:
 
 | File | Read it when |
 |---|---|
+| `docs/01-getting-started.md` | First: the ordered path to your first review |
 | `docs/02-setup.md` | Before the first run: accounts, retention, scanner pin |
 | `docs/03-data-handling.md` | Before the first run: what leaves the perimeter |
 | `docs/04-procedures.md` | Choosing which of the four procedures fits |
@@ -127,7 +128,7 @@ Documentation, in reading order:
 | `docs/06-controls.md` | Auditing: what each control refuses and what proves it |
 | `docs/07-graduation.md` | Deciding whether to keep going or automate |
 
-The series starts at 02; there is no 01.
+The numbering has gaps where documents were never needed.
 
 ## Prerequisites
 
