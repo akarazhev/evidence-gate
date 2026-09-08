@@ -704,3 +704,43 @@
   placeholder-only guarantee.
 - Why: evidence must remain auditable without chat history, and documentation
   must not promise semantic assurance from a syntactic gate.
+
+## Task 26 fix round 1: policy continuation grammar
+
+- Before: any colon-containing continuation became a property of the current
+  exclusion. A malformed `-pattern` entry was therefore swallowed into a
+  preceding valid rule and silently failed to protect its intended path.
+- After: only `pattern`, `owner`, and `reason` are supported. Every other key
+  refuses with its physical source line. The tab-marker mutation fixture now
+  starts with an unrelated complete PEM exclusion, so its weakened CLI run
+  wrongly accepts `.env` at exit 0 instead of being masked by the zero-rule
+  guard.
+- Why: an exclusion parser must fail closed on syntax outside its deliberately
+  narrow grammar; retaining one unrelated rule cannot make a lost rule safe.
+
+## Task 26 fix round 1: CSV physical-line semantics
+
+- Before: `str.splitlines()` counted U+2028 although `append_log` permits it,
+  non-strict CSV accepted an unterminated final quote followed by blank lines,
+  and sequential row numbering reported a malformed line 3 record as row 2.
+- After: physical lines are split only at CR/LF boundaries, `DictReader` uses
+  strict CSV semantics, and record starts are found from actual non-empty
+  physical lines consumed after the preceding record. A well-formed multiline
+  row still exercises the record/physical-line count guard causally.
+- Why: the reader and append-only writer must share the same physical newline
+  definition, distinguish malformed quoting from aggregate counts, and report
+  a location an operator can actually inspect.
+
+## Task 26 fix round 1: installed validator execution
+
+- Before: the available-backend test always shadowed any installation with a
+  no-op local `jsonschema.py`; it established backend opacity but not the
+  specifically requested installed-backend execution.
+- After: that test remains, and a separate conditional regression invokes the
+  real validator. Default Python reports an honest skip when it has no package;
+  `/opt/homebrew/Cellar/semgrep/1.172.0/libexec/bin/python` executes the test
+  with local `jsonschema` 4.25.1. Its append spy proves that mutating the shared
+  canonical predicate from `fullmatch` to `match` reaches an artifact write.
+- Why: a fake accepting module and an installed implementation establish
+  different evidence. Both are useful, but neither should be mislabeled as the
+  other.
