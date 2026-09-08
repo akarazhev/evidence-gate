@@ -38,6 +38,43 @@ class TestDecisionRecording(unittest.TestCase):
             [sys.executable, str(SCRIPT), *args], capture_output=True, text=True
         )
 
+    def assert_invalid_input_leaves_artifacts_untouched(self, flag, value):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            write_log(log, [verdict_row()])
+            before = log.read_bytes()
+            args = [
+                "--finding-id", "F-000000000001", "--decision", "accepted",
+                "--by", value if flag == "--by" else "appsec-oncall",
+                "--log", str(log), "--sarif", str(sarif),
+            ]
+            if flag != "--by":
+                args.extend([flag, value])
+            proc = self.run_script(args)
+            self.assertEqual(log.read_bytes(), before, "refusal must not append to the log")
+            self.assertFalse(sarif.exists(), "refusal must not write SARIF")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn(flag, proc.stderr)
+
+    def test_negative_minutes_are_refused_without_writes(self):
+        self.assert_invalid_input_leaves_artifacts_untouched("--minutes", "-5")
+
+    def test_infinite_minutes_are_refused_without_writes(self):
+        self.assert_invalid_input_leaves_artifacts_untouched("--minutes", "inf")
+
+    def test_nan_minutes_are_refused_without_writes(self):
+        self.assert_invalid_input_leaves_artifacts_untouched("--minutes", "nan")
+
+    def test_non_numeric_minutes_are_refused_without_writes(self):
+        self.assert_invalid_input_leaves_artifacts_untouched("--minutes", "abc")
+
+    def test_whitespace_by_is_refused_without_writes(self):
+        self.assert_invalid_input_leaves_artifacts_untouched("--by", "   ")
+
+    def test_empty_by_is_refused_without_writes(self):
+        self.assert_invalid_input_leaves_artifacts_untouched("--by", "")
+
     def test_script_can_be_invoked_directly(self):
         proc = subprocess.run(
             [str(SCRIPT), "--help"], capture_output=True, text=True

@@ -213,6 +213,13 @@ def resolve_within(
     So the resolved target is checked as well, and a target outside the
     repository is refused outright. The policy describes paths within the
     repository and cannot speak for anything beyond it.
+
+    Resolution cannot see through a hard link: the file has two equally real
+    names and there is no target to resolve. An excluded file hard-linked to an
+    allowed name passes this check. Creating one needs local write access to
+    the working tree, so it is recorded as a limitation in docs/03 rather than
+    guarded - a st_nlink test would refuse pnpm stores and CI caches, and a
+    control that cries wolf gets switched off.
     """
     check_path(relative, exclusions)
 

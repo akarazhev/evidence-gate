@@ -6127,6 +6127,115 @@ check-scope`, `make list SARIF=tests/fixtures/sample.sarif`, `make metrics`,
 
 ---
 
+### Task 27: Правки перед слиянием
+
+Итог комплексного ревью человеком на `bb0d238`. Прогон подтверждён независимо в
+обоих режимах: 268 тестов зелёные без `jsonschema` и с `jsonschema` 4.26.0.
+Мутационная методология проверена собственной мутацией — снятие одного контроля
+роняет ровно один именованный тест.
+
+Три правки блокируют слияние. Остальные остатки третьего ревью в эту задачу **не
+входят** и уходят отдельным тикетом.
+
+- [x] **Step 1: `--minutes` принимает `nan` и уничтожает главную метрику**
+
+Проверено:
+
+    median: 20.0 | mean: nan | total_hours: nan
+
+Одна опечатка в одном вызове превращает `mean_minutes` и `total_hours` в `nan`,
+и они **печатаются как результат**, а не вызывают отказ. Это метрика №1 программы
+и первый критерий graduation в `docs/07`. Медиана уцелела случайно — на другой
+выборке не уцелеет. Отрицательные и `inf` принимаются так же.
+
+Проверка на разборе аргументов, до всякой записи:
+
+    def _minutes(value: str) -> float:
+        """Engineer time in minutes: finite and not negative.
+
+        A single nan turns mean_minutes and total_hours into nan for the whole
+        programme, and they print as results rather than refusing - destroying
+        the one number docs/07 makes the first graduation criterion. float()
+        accepts "nan" and "inf" happily, so the check has to follow the parse.
+        """
+        parsed = float(value)
+        if not math.isfinite(parsed) or parsed < 0:
+            raise argparse.ArgumentTypeError(
+                f"{value!r} is not a finite, non-negative number of minutes"
+            )
+        return parsed
+
+**Подключить в обоих скриптах**: `record_verdict.py` и
+`record_human_decision.py`. Оба принимают `--minutes`, и починка одного из них —
+ровно та ошибка, которая в этом проекте повторялась четырежды.
+
+Тот же контракт действует при чтении старого журнала: `minutes_spent` либо пуст,
+либо содержит конечное неотрицательное число. `check_log_compatible` отказывает
+на отрицательном, `inf`, `nan` и нечисловом значении с указанием физической
+строки, прежде чем `metrics.py` сможет напечатать отравленный результат.
+
+Тесты: `-5`, `inf`, `nan`, `abc` — non-zero для обоих скриптов;
+`record_verdict.py` не создаёт лог или SARIF, а
+`record_human_decision.py` не меняет существующий лог и не создаёт SARIF.
+Проверки артефактов находятся внутри `temp_tree`. Мутационная проверка записи:
+снять `math.isfinite`, убедиться что краснеют именованные тесты с `nan` для
+обоих скриптов, а не только тесты с `inf`. Мутационная проверка чтения: снять
+правило `minutes_spent` из контракта строки и убедиться, что отдельный тест с
+`nan` в существующем журнале краснеет.
+
+- [x] **Step 2: `--by` принимает строку из пробелов**
+
+Проверено: `--by "   "` даёт exit 0, и решение приписывается пробелам.
+
+Не писать вторую нормализацию. Task 25 Step 4 уже ввёл `_identity` для
+`--agent` и `--validator`; переиспользовать её. Две копии одного правила
+разойдутся при первой правке — в этом проекте это происходило дважды, оба раза
+между `record_verdict.py` и `record_human_decision.py`.
+
+Тест: `--by "   "` и `--by ""` — non-zero, лог не тронут. Мутационная проверка:
+убрать обрезку, убедиться что тест краснеет.
+
+- [x] **Step 3: Жёсткие ссылки — записать как ограничение**
+
+Найдено в комплексном ревью, в списке третьего круга отсутствовало. Проверено:
+
+    жёсткая ссылка на исключённый файл    1 | HARDLINK-SECRET
+
+`resolve_within` здесь бессилен принципиально: у файла два равноправных имени, и
+разрешать нечего. Все прежние обходы области чинились разрешением пути — этот не
+чинится.
+
+**Не чинить проверкой `st_nlink > 1`.** pnpm и часть кэшей CI создают жёсткие
+ссылки штатно; ложные отказы приучат отключать контроль, а отключённый контроль
+хуже описанной границы.
+
+Записать в `docs/03` рядом с уже записанными ограничениями (осмысленность
+`check-template` и неатомарность проверки с открытием), по прецеденту Task 25
+Step 6. И в docstring `resolve_within` добавить, чего она не умеет:
+
+    Resolution cannot see through a hard link: the file has two equally real
+    names and there is no target to resolve. An excluded file hard-linked to an
+    allowed name passes this check. Creating one needs local write access to
+    the working tree, so it is recorded as a limitation in docs/03 rather than
+    guarded - a st_nlink test would refuse pnpm stores and CI caches, and a
+    control that cries wolf gets switched off.
+
+Мутационной проверки нет: шаг текстовый. Требование к нему — граница названа
+там, где её будут искать, то есть и в docs, и в коде.
+
+- [x] **Step 4: Остатки — в тикет, не в эту задачу**
+
+Семь Important и четыре Minor из третьего круга плюс всё, что найдётся дальше,
+собрать в отдельный тикет со ссылками на воспроизведения из
+`final-review-round-5-report.md`. Ни один из них не пробивает основную угрозу —
+попадание содержимого исключённого файла в пакет при обычной работе.
+
+В эту задачу их не тянуть: смысл рубежа в том, чтобы слияние состоялось.
+Они вынесены в отдельный post-merge тикет:
+`https://github.com/akarazhev/evidence-gate/issues/1`.
+
+---
+
 ## Критерии готовности
 
 - `make test` зелёный на голом Python 3.9+ без единой установки.

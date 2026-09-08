@@ -37,6 +37,8 @@ from record_verdict import (  # noqa: E402
     LOG_PATH,
     SARIF_OUT,
     ValidationError,
+    _identity,
+    _minutes,
     append_log,
     check_log_compatible,
     load_existing_results,
@@ -81,10 +83,15 @@ def main() -> int:
         "the triage log is committed.",
     )
     parser.add_argument("--rationale", default="")
-    parser.add_argument("--minutes", type=float)
+    parser.add_argument("--minutes", type=_minutes)
     parser.add_argument("--log", type=Path, default=LOG_PATH)
     parser.add_argument("--sarif", type=Path, default=SARIF_OUT)
     args = parser.parse_args()
+
+    try:
+        args.by = _identity(args.by, "--by")
+    except ValueError as exc:
+        parser.error(str(exc))
 
     verdict_row = latest_verdict_row(args.log, args.finding_id)
     if verdict_row is None:

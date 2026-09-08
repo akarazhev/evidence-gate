@@ -27,6 +27,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import re
 import sys
 from datetime import datetime, timezone
@@ -80,6 +81,22 @@ def _identity(value: str, flag: str) -> str:
     if not cleaned:
         raise ValueError(f"{flag} must not be empty")
     return cleaned
+
+
+def _minutes(value: str) -> float:
+    """Engineer time in minutes: finite and not negative.
+
+    A single nan turns mean_minutes and total_hours into nan for the whole
+    programme, and they print as results rather than refusing - destroying
+    the one number docs/07 makes the first graduation criterion. float()
+    accepts "nan" and "inf" happily, so the check has to follow the parse.
+    """
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a finite, non-negative number of minutes"
+        )
+    return parsed
 
 
 def validate(instance: dict, schema_name: str) -> None:
@@ -451,6 +468,17 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
                     f"expected {id_scheme!r}"
                 )
 
+            minutes_spent = row["minutes_spent"]
+            if minutes_spent != "":
+                try:
+                    _minutes(minutes_spent)
+                except (ValueError, argparse.ArgumentTypeError) as exc:
+                    raise ValidationError(
+                        f"{path} row {line_number} has invalid minutes_spent "
+                        f"{minutes_spent!r}; expected an empty value or a "
+                        "finite, non-negative number"
+                    ) from exc
+
             for field in ("initial_verdict", "human_decision"):
                 marker = row[field]
                 if marker and not marker.strip():
@@ -639,7 +667,7 @@ def main() -> int:
                         help="Model identifier for the validation pass; required with --challenge")
     parser.add_argument("--log", type=Path, default=LOG_PATH,
                         help="Triage log to append to")
-    parser.add_argument("--minutes", type=float, help="Engineer time spent, for metrics")
+    parser.add_argument("--minutes", type=_minutes, help="Engineer time spent, for metrics")
     parser.add_argument("--notes", default="")
     parser.add_argument("--sarif-out", type=Path, default=SARIF_OUT)
     parser.add_argument("--fresh", action="store_true",

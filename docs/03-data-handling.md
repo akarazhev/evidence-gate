@@ -167,6 +167,15 @@ for this workflow's intended boundary: one engineer working in a repository
 that no other process is modifying concurrently. Do not rely on this manual
 workflow in a concurrently mutating working tree.
 
+Path resolution cannot detect a hard link. An excluded file and an allowed
+hard link to it are two equally real names for the same content, so there is no
+link target for `resolve_within` to inspect; content read through the allowed
+name passes the scope check. Creating that alias requires local write access to
+the working tree. Do not run this workflow in a tree writable by an untrusted
+process. The control deliberately does not reject every file with more than one
+hard link: pnpm stores and CI caches use hard links legitimately, and routine
+false refusals would train operators to disable the scope control entirely.
+
 ## Pre-flight checklist
 
 Before the first real review:

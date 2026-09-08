@@ -277,6 +277,38 @@ class TestIndependenceControl(unittest.TestCase):
         (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
         (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
 
+    def assert_invalid_minutes_refused_without_writes(self, minutes):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--minutes", minutes,
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ],
+                root,
+            )
+            self.assertFalse(log.exists(), "invalid minutes must not create the log")
+            self.assertFalse(sarif.exists(), "invalid minutes must not write SARIF")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("--minutes", proc.stderr)
+
+    def test_negative_minutes_are_refused_without_writes(self):
+        self.assert_invalid_minutes_refused_without_writes("-5")
+
+    def test_infinite_minutes_are_refused_without_writes(self):
+        self.assert_invalid_minutes_refused_without_writes("inf")
+
+    def test_nan_minutes_are_refused_without_writes(self):
+        self.assert_invalid_minutes_refused_without_writes("nan")
+
+    def test_non_numeric_minutes_are_refused_without_writes(self):
+        self.assert_invalid_minutes_refused_without_writes("abc")
+
     def test_recorder_stamps_recorded_at_and_preserves_model_reviewed_at(self):
         with temp_tree({}) as root:
             self.setup_files(root)
@@ -954,11 +986,32 @@ class TestLogCompatibility(unittest.TestCase):
             self.assertIn("row 2", str(caught.exception))
             self.assertIn(message, str(caught.exception))
 
-    def test_valid_row_is_accepted(self):
-        with temp_tree({}) as root:
-            log = root / "triage-log.csv"
-            write_log(log, [self.valid_row()])
-            record_verdict.check_log_compatible(log, "content-v1")
+    def test_empty_or_non_negative_finite_minutes_spent_are_accepted(self):
+        for minutes in ("", "0", "12.5"):
+            with self.subTest(minutes=minutes), temp_tree({}) as root:
+                log = root / "triage-log.csv"
+                write_log(log, [self.valid_row(minutes_spent=minutes)])
+                record_verdict.check_log_compatible(log, "content-v1")
+
+    def test_negative_minutes_spent_is_refused_with_row_number(self):
+        self.assert_row_refused(
+            self.valid_row(minutes_spent="-1"), "minutes_spent"
+        )
+
+    def test_infinite_minutes_spent_is_refused_with_row_number(self):
+        self.assert_row_refused(
+            self.valid_row(minutes_spent="inf"), "minutes_spent"
+        )
+
+    def test_nan_minutes_spent_is_refused_with_row_number(self):
+        self.assert_row_refused(
+            self.valid_row(minutes_spent="nan"), "minutes_spent"
+        )
+
+    def test_non_numeric_minutes_spent_is_refused_with_row_number(self):
+        self.assert_row_refused(
+            self.valid_row(minutes_spent="abc"), "minutes_spent"
+        )
 
     def test_unicode_line_separator_round_trips_as_one_physical_line(self):
         with temp_tree({}) as root:
