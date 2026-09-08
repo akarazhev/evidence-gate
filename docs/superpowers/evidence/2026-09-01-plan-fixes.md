@@ -768,3 +768,33 @@
   `13f0fe671361e2d2030f011bff8a8449b83e25f3`.
 - Why: audit evidence must be replayable and must expose the asserted side
   effect directly, not replace relevant raw output with editorial shorthand.
+
+## Task 27: finite timing contract, human identity and hard-link boundary
+
+- Before: both recorders accepted negative values, `inf` and `nan` through
+  unrestricted argparse `float` conversion. The log reader accepted the same
+  values from an existing audit row, so a pre-fix log could still print
+  `mean_minutes` and `total_hours` as `nan`. The human-decision writer also
+  accepted an empty or whitespace-only `--by` value.
+- After: `record_verdict._minutes` defines one finite, non-negative timing
+  contract and both recorders use it at argument parsing. The row contract
+  applies the same function to every non-empty `minutes_spent` cell and reports
+  the physical row on refusal. `record_human_decision` imports the existing
+  `_identity` helper and normalises `--by` before any artifact access. Code
+  GREEN is `79215f1c7a24bf73ac6866d867642dc82d211620`.
+- Why: validating only the writer being inspected leaves the other writer and
+  existing logs able to poison the programme's primary metric. Sharing both
+  small contracts prevents the two recording scripts from drifting again.
+
+- Before: resolving paths closes symlink aliases but cannot reveal that an
+  allowed pathname and an excluded pathname are hard links to one inode.
+- After: the limitation and its local-write trust assumption are stated beside
+  the other manual-control limits in `docs/03-data-handling.md` and in
+  `resolve_within` itself. No `st_nlink` guard was added because legitimate
+  pnpm stores and CI caches would create routine false refusals.
+- Why: this boundary needs to be visible where operators and maintainers look;
+  a noisy control that rejects legitimate hard links would be switched off.
+
+- Scope cut: the seven Important and four Minor round-five follow-ups were not
+  pulled into Task 27. They are tracked separately in GitHub issue #1, which
+  references `final-review-round-5-report.md`.
