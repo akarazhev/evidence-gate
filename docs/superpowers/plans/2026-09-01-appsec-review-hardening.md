@@ -5161,24 +5161,75 @@ Semgrep по умолчанию делает HTTP-запрос проверки 
 Task 8, но проверка оказалась слишком мелкой: она ловит нечитаемый JSON и не
 ловит читаемый мусор.
 
-Дополнить проверку структуры перед возвратом:
+**Проверка контейнеров недостаточна.** Первая редакция этого шага сверяла только
+типы `result` и `properties`. Проверено, что этого мало:
+
+| Существующий SARIF | exit | лог | sarif |
+|---|---|---|---|
+| `[{"properties":{"finding_id":null}}]` | 1 | записан | нет |
+| `[{"properties":{"finding_id":7}}]` | 1 | записан | нет |
+| `{}` | 0 | записан | **подменён** |
+
+Первые два падают в сортировке `merge_result`, которая сравнивает `None` или
+`int` со строкой, — и падают уже после `append_log`. Третий проходит насквозь:
+`data.get("runs") or []` превращает нераспознанный документ в пустой список, и
+файл, который мы не смогли истолковать, молча замещается.
+
+**Правило: проверять на ту глубину, на которую полагается потребитель.**
+`merge_result` сортирует и сопоставляет по `properties.finding_id`, значит
+валидатор обязан гарантировать именно это поле, а не тип контейнера над ним.
+Проверка мельче, чем использование, — это и есть форма всех четырёх обходов,
+найденных в финальном ревью.
+
+Заменить тело `load_existing_results` после разбора JSON:
 
 ```python
-    results = runs[0].get("results", [])
+    if (
+        not isinstance(data, dict)
+        or "version" not in data
+        or not isinstance(data.get("runs"), list)
+    ):
+        raise ValidationError(
+            f"{path} is not a SARIF document this tool wrote: no version, or "
+            "runs is not a list. Refusing to replace a file we cannot "
+            "interpret. Move it aside, or pass --fresh."
+        )
+
+    if not data["runs"]:
+        return []
+
+    results = data["runs"][0].get("results", [])
+    if not isinstance(results, list):
+        raise ValidationError(f"{path}: runs[0].results is not a list.")
+
     for index, result in enumerate(results):
-        if not isinstance(result, dict) or not isinstance(
-            result.get("properties"), dict
-        ):
+        if not isinstance(result, dict):
+            raise ValidationError(f"{path}: results[{index}] is not an object.")
+        properties = result.get("properties")
+        if not isinstance(properties, dict):
             raise ValidationError(
-                f"{path}: results[{index}] is not a reviewed finding. Refusing "
-                "to merge into a file this tool did not write. Move it aside, "
-                "or pass --fresh."
+                f"{path}: results[{index}] has no properties object."
             )
+        finding_id = properties.get("finding_id")
+        if not isinstance(finding_id, str) or not finding_id:
+            # Checked to this depth on purpose: merge_result sorts and matches
+            # on this field, so anything else crashes the sort - after the log
+            # has already been appended to.
+            raise ValidationError(
+                f"{path}: results[{index}].properties.finding_id is "
+                f"{finding_id!r}, not a non-empty string."
+            )
+
     return results
 ```
 
-Исключение возникает до `append_log`, поэтому частичной записи больше нет.
-Регрессия: SARIF с `[null]` даёт non-zero и лог без новой строки.
+Все три исключения возникают до `append_log`, поэтому частичной записи не
+остаётся.
+
+Регрессии — процессные, по одной на строку таблицы: non-zero, лог не создан,
+существующий SARIF байт в байт прежний. Сверять содержимое хешем **внутри** блока
+`temp_tree`, а не фактом существования: третий случай отличается именно подменой
+содержимого, а файл при этом на месте.
 
 - [ ] **Step 3: Многострочный подсчёт вхождений склеивает разные находки**
 

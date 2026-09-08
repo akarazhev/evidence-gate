@@ -504,3 +504,21 @@
   RED from causal existing-behavior proof.
 - Why: The controller required actual historical execution while preserving
   the shared branch. The snapshots were never used to switch/reset the checkout.
+
+## Task 22 fix round 1: user-authored SARIF control-depth correction
+
+- Before: Step 2 checked only result and properties containers. Null/numeric
+  finding IDs reached merge sorting after audit append, while object results
+  and unrecognized documents could be silently replaced.
+- After: The user's rewritten Step 2 requires a document object with a version
+  key, runs and results lists, result and properties objects, and a non-empty
+  string `properties.finding_id` before appending. The user's existing plan
+  edit is preserved verbatim. Valid empty runs/results remain supported.
+  New CLI tests hash the existing SARIF and check absent/unchanged audit logs
+  inside the temporary context, including the explicitly required empty ID.
+- Why: This is a user-authored control correction, not an inferred local
+  relaxation. Validation must reach every field that `merge_result` uses.
+  A new mutation restores the old shallow check and proves the deep cases fail
+  on actual artifact side effects; restoration, 76 focused tests, and one final
+  203-test full suite pass. The change uses a separate follow-up commit named
+  `fix: validate existing SARIF before recording`.

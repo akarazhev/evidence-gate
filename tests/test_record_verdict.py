@@ -6,6 +6,7 @@ is a defect of the same kind this whole workflow exists to catch.
 """
 
 import csv
+import hashlib
 import json
 import subprocess
 import sys
@@ -445,7 +446,89 @@ class TestIndependenceControl(unittest.TestCase):
                 self.assertEqual(sarif.read_bytes(), before_sarif)
                 self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                 self.assertIn("SARIF ERROR", proc.stderr)
-                self.assertIn("results[0] is not a reviewed finding", proc.stderr)
+                self.assertIn("results[0]", proc.stderr)
+
+    def assert_invalid_existing_sarif_is_untouched(self, document):
+        for existing_log in (False, True):
+            with self.subTest(existing_log=existing_log), temp_tree({}) as root:
+                self.setup_files(root)
+                log = root / "triage-log.csv"
+                if existing_log:
+                    write_log(log, [{
+                        "finding_id": "F-previous", "initial_verdict": "true_positive",
+                        "id_scheme": "content-v1",
+                    }])
+                before_log = log.read_bytes() if existing_log else None
+                sarif = root / "reviewed.sarif"
+                sarif.write_text(json.dumps(document), encoding="utf-8")
+                before_sarif = hashlib.sha256(sarif.read_bytes()).hexdigest()
+                proc = self.run_recorder([
+                    "--verdict", str(root / "verdict.json"), "--agent", "model-a",
+                    "--sarif-out", str(sarif), "--log", str(log),
+                ], root)
+                self.assertEqual(hashlib.sha256(sarif.read_bytes()).hexdigest(), before_sarif,
+                                 "refusal must preserve existing SARIF bytes")
+                if existing_log:
+                    self.assertEqual(log.read_bytes(), before_log, "refusal must not append an audit row")
+                else:
+                    self.assertFalse(log.exists(), "refusal must not create the audit log")
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("SARIF ERROR", proc.stderr)
+
+    def test_null_existing_finding_id_refuses_without_writes(self):
+        self.assert_invalid_existing_sarif_is_untouched({
+            "version": "2.1.0", "runs": [{"results": [{"properties": {"finding_id": None}}]}],
+        })
+
+    def test_numeric_existing_finding_id_refuses_without_writes(self):
+        self.assert_invalid_existing_sarif_is_untouched({
+            "version": "2.1.0", "runs": [{"results": [{"properties": {"finding_id": 7}}]}],
+        })
+
+    def test_empty_existing_finding_id_refuses_without_writes(self):
+        self.assert_invalid_existing_sarif_is_untouched({
+            "version": "2.1.0", "runs": [{"results": [{"properties": {"finding_id": ""}}]}],
+        })
+
+    def test_object_results_refuse_without_replacing_sarif(self):
+        self.assert_invalid_existing_sarif_is_untouched({
+            "version": "2.1.0", "runs": [{"results": {}}],
+        })
+
+    def test_unrecognized_document_refuses_without_replacing_sarif(self):
+        for document in ({}, [], {"runs": []}, {"version": "2.1.0"},
+                         {"version": "2.1.0", "runs": {}}, {"version": "2.1.0", "runs": None}):
+            with self.subTest(document=document):
+                self.assert_invalid_existing_sarif_is_untouched(document)
+
+    def test_missing_existing_finding_id_refuses_without_writes(self):
+        self.assert_invalid_existing_sarif_is_untouched({
+            "version": "2.1.0", "runs": [{"results": [{"properties": {}}]}],
+        })
+
+    def test_non_list_results_refuse_without_writes(self):
+        for results in (None, 7, ""):
+            with self.subTest(results=results):
+                self.assert_invalid_existing_sarif_is_untouched({
+                    "version": "2.1.0", "runs": [{"results": results}],
+                })
+
+    def test_valid_empty_runs_and_results_can_record(self):
+        for runs in ([], [{}], [{"results": []}]):
+            with self.subTest(runs=runs), temp_tree({}) as root:
+                self.setup_files(root)
+                log = root / "triage-log.csv"
+                sarif = root / "reviewed.sarif"
+                sarif.write_text(json.dumps({"version": "2.1.0", "runs": runs}), encoding="utf-8")
+                proc = self.run_recorder([
+                    "--verdict", str(root / "verdict.json"), "--agent", "model-a",
+                    "--sarif-out", str(sarif), "--log", str(log),
+                ], root)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                results = json.loads(sarif.read_text(encoding="utf-8"))["runs"][0]["results"]
+                self.assertEqual([result["properties"]["finding_id"] for result in results], ["F-000000000001"])
+                with log.open(encoding="utf-8") as stream:
+                    self.assertEqual(len(list(csv.DictReader(stream))), 1)
 
     def test_distinct_models_are_accepted(self):
         with temp_tree({"placeholder": ""}) as root:

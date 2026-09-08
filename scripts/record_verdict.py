@@ -429,19 +429,42 @@ def load_existing_results(path: Path) -> list[dict]:
             f"Cannot read {path}: {exc}. Refusing to overwrite a file that "
             "cannot be parsed. Move it aside, or pass --fresh to start over."
         ) from exc
-    runs = data.get("runs") or []
-    if not runs:
+    if (
+        not isinstance(data, dict)
+        or "version" not in data
+        or not isinstance(data.get("runs"), list)
+    ):
+        raise ValidationError(
+            f"{path} is not a SARIF document this tool wrote: no version, or "
+            "runs is not a list. Refusing to replace a file we cannot "
+            "interpret. Move it aside, or pass --fresh."
+        )
+
+    if not data["runs"]:
         return []
-    results = runs[0].get("results", [])
+
+    results = data["runs"][0].get("results", [])
+    if not isinstance(results, list):
+        raise ValidationError(f"{path}: runs[0].results is not a list.")
+
     for index, result in enumerate(results):
-        if not isinstance(result, dict) or not isinstance(
-            result.get("properties"), dict
-        ):
+        if not isinstance(result, dict):
+            raise ValidationError(f"{path}: results[{index}] is not an object.")
+        properties = result.get("properties")
+        if not isinstance(properties, dict):
             raise ValidationError(
-                f"{path}: results[{index}] is not a reviewed finding. Refusing "
-                "to merge into a file this tool did not write. Move it aside, "
-                "or pass --fresh."
+                f"{path}: results[{index}] has no properties object."
             )
+        finding_id = properties.get("finding_id")
+        if not isinstance(finding_id, str) or not finding_id:
+            # Checked to this depth on purpose: merge_result sorts and matches
+            # on this field, so anything else crashes the sort - after the log
+            # has already been appended to.
+            raise ValidationError(
+                f"{path}: results[{index}].properties.finding_id is "
+                f"{finding_id!r}, not a non-empty string."
+            )
+
     return results
 
 
