@@ -676,3 +676,31 @@
   that test fail causally.
 - Why: mutation evidence must establish that the named constraint branch—not
   a neighboring validation rule—causes the refusal.
+
+## Task 26 shared canonical-ID validation boundary
+
+- Before: the first Task 26 draft placed the terminal-newline identity check in
+  `_fallback_validate`, which runs only when `jsonschema` is unavailable. The
+  recommended installed-backend configuration would still write a poisoned id.
+- After: the user/controller correction places one canonical-ID predicate after
+  either validation backend and before writes for the verdict and any supplied
+  challenge. Separate tests use an accepting available backend and forced
+  `ImportError` with an opaque accepting fallback; fallback `fullmatch` is tested
+  independently.
+- Why: validation backend selection is an implementation detail. The recorder's
+  exact generated-identity contract must not depend on it.
+
+## Task 26 honest standalone evidence and prose boundary
+
+- Before: historical evidence entries did not all identify whether they were
+  causal executions, controlled mutations, or missing-code/interface RED, and
+  several lacked an adjacent exact GREEN commit. Template-gate prose also
+  implied semantic validation that the placeholder scanner cannot perform.
+- After: `red-tests.md` has an authoritative standalone index naming each
+  defect, actual evidence class and exact GREEN commit; Task 26 includes all
+  three mutation/restoration patches and outputs plus its main GREEN commit
+  `1ca9b8011049cb01152c4f9f725cb0b085a66dd5`. README, the data-handling
+  checklist, script/test prose and the Russian execution plan state the narrower
+  placeholder-only guarantee.
+- Why: evidence must remain auditable without chat history, and documentation
+  must not promise semantic assurance from a syntactic gate.
