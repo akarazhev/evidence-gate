@@ -13,11 +13,12 @@ access or CI credentials.
 
 A repeatable procedure, not a pipeline. It gives you:
 
-- A deterministic scan producing SARIF (Semgrep, plus SCA and SBOM).
+- A deterministic scan producing SARIF (Semgrep). SCA and SBOM tools are
+  optional and are run separately; `make scan` does not invoke them.
 - A structured triage procedure where an agent explains and classifies a finding.
 - A separate adversarial validation pass that tries to refute the verdict.
-- A normalized verdict record that flows back into the same findings store as
-  everything else.
+- A normalized verdict record in `findings/reviewed.sarif`, ready to import
+  into a findings store. The DefectDojo importer is a placeholder; see Status.
 - Metrics that tell you whether this is working before you commit to automating it.
 
 ## What this is not
@@ -106,15 +107,27 @@ reproduce or put in a ticket.
 | Path | Contents |
 |---|---|
 | `CLAUDE.md` | Project context the agent reads at session start |
-| `docs/` | Procedures, data-handling rules, metrics, graduation criteria |
+| `docs/` | Procedures, data handling, design decisions, controls, graduation |
 | `prompts/` | The five review procedures, one file each |
 | `policy/` | Excluded paths and severity policy. Both are enforced by scripts |
 | `scripts/` | Scan, scope check, packet builder, verdict recorder, metrics |
-| `goldenset/` | Regression cases used to qualify any tool or model change |
+| `rules/` | Local Semgrep rules. Empty by default; `make scan` refuses without them |
+| `goldenset/` | Intended for regression cases. Placeholder, see Status |
 | `templates/` | Verdict and challenge schemas, threat-model template |
 | `findings/` | Local working directory. Git-ignored |
 
-Documentation files follow an internal series, so the numbering has gaps.
+Documentation, in reading order:
+
+| File | Read it when |
+|---|---|
+| `docs/02-setup.md` | Before the first run: accounts, retention, scanner pin |
+| `docs/03-data-handling.md` | Before the first run: what leaves the perimeter |
+| `docs/04-procedures.md` | Choosing which of the four procedures fits |
+| `docs/05-design-decisions.md` | Changing a control, to see what you would undo |
+| `docs/06-controls.md` | Auditing: what each control refuses and what proves it |
+| `docs/07-graduation.md` | Deciding whether to keep going or automate |
+
+The series starts at 02; there is no 01.
 
 ## Prerequisites
 
@@ -145,6 +158,6 @@ Documentation files follow an internal series, so the numbering has gaps.
 
 ## License
 
-Choose one before publishing. The prompts and docs here are original; the skill
-packs referenced in `docs/02-setup.md` carry their own licenses (MIT, Apache 2.0,
-CC-BY-SA) and are not vendored into this repository.
+Not yet chosen. The prompts, docs and scripts here are original work; nothing is
+vendored from another project. Pick a license before anyone else depends on
+this.
