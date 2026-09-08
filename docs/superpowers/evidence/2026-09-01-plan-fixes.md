@@ -699,7 +699,7 @@
 - After: `red-tests.md` has an authoritative standalone index naming each
   defect, actual evidence class and exact GREEN commit; Task 26 includes all
   three mutation/restoration patches and outputs plus its main GREEN commit
-  `1ca9b8011049cb01152c4f9f725cb0b085a66dd5`. README, the data-handling
+  `13f0fe671361e2d2030f011bff8a8449b83e25f3`. README, the data-handling
   checklist, script/test prose and the Russian execution plan state the narrower
   placeholder-only guarantee.
 - Why: evidence must remain auditable without chat history, and documentation
@@ -744,3 +744,27 @@
 - Why: a fake accepting module and an installed implementation establish
   different evidence. Both are useful, but neither should be mislabeled as the
   other.
+
+## Task 26 fix round 2: strict quoted-header boundary
+
+- Before: strict parsing applied to the header, but its `csv.Error` escaped the
+  row-level exception translation. The public recorder printed a raw traceback
+  instead of its controlled `LOG ERROR` contract.
+- After: header parsing is inside its own narrow `csv.Error` boundary and
+  raises `ValidationError` naming true physical row 1. The process regression
+  verifies the existing log is byte-identical, SARIF is absent, stderr has
+  `LOG ERROR`, row 1, and `invalid CSV`, and no traceback.
+- Why: strict fail-closed parsing includes both header and data records; the
+  first record cannot have a weaker public error boundary than later records.
+
+## Task 26 fix round 2: complete installed-backend evidence
+
+- Before: the round-1 prose abbreviated the causal mutation output with
+  elided temporary paths and omitted recorder status lines.
+- After: the standalone evidence and implementation report preserve the exact
+  local-interpreter command, complete raw artifact-write failure, exact
+  temporary paths and every status/rationale line, plus the complete restored
+  GREEN output. The Task 26 index names code GREEN commit
+  `13f0fe671361e2d2030f011bff8a8449b83e25f3`.
+- Why: audit evidence must be replayable and must expose the asserted side
+  effect directly, not replace relevant raw output with editorial shorthand.
