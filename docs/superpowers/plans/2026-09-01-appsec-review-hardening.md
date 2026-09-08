@@ -5689,6 +5689,236 @@ def verdict_digest(verdict: dict) -> str:
 
 ---
 
+### Task 25: Правки второго финального ревью
+
+Step 7 из Task 24 отработал: пять новых дефектов, все — в тех пяти контролях,
+которые он предписывал перечитать. Все проверены исполнением.
+
+**Execution contract.** Work from base
+`231505c3370a80eaa95f12a50681a3b58e6099c1` on `hardening/2026-09` without
+switching branches or modifying the spec. Preserve the user's uncommitted Task
+25 plan. The exact tracked file surface is:
+
+- `scripts/check_scope.py`
+- `scripts/record_verdict.py`
+- `scripts/metrics.py`
+- `scripts/build_packet.py`
+- `templates/verdict.schema.json`
+- `templates/challenge.schema.json`
+- `tests/test_check_scope.py`
+- `tests/test_record_verdict.py`
+- `tests/test_metrics.py`
+- `tests/test_build_packet.py`
+- `tests/test_human_decision.py`
+- `docs/03-data-handling.md`
+- `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`
+- `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+
+Steps 1–5 each require tests and an observed causal RED before the minimum
+production change, followed by focused GREEN. Apply each prescribed mutation
+separately with `apply_patch`, retain its actual failing command and output,
+restore it with `apply_patch`, and prove restored GREEN before the next step.
+Force `jsonschema` unavailable in fallback tests. Step 3's malformed
+`recorded_at` mutation must reach wrong event ordering, and every no-write
+assertion must execute inside its temporary tree. Make no network calls and
+install nothing.
+
+After Step 6, run focused verification, one final `make test`, `make
+check-scope`, `make list SARIF=tests/fixtures/sample.sarif`, `make metrics`, the
+expected-failing `make check-template`, and `git diff --check`. Backfill Task
+24's GREEN commit `231505c3370a80eaa95f12a50681a3b58e6099c1` in
+`red-tests.md`. Stage exactly the files above, verify the staged set, and make
+one commit with subject `fix: close second-review control gaps`.
+
+- [x] **Step 1: Испорченная политика отключает область молча**
+
+Худший дефект всего ревью. Проверено: политика с ключом `exclusion:` вместо
+`exclusions:` разбирается в ноль правил, и `check_scope.py .env` возвращает
+`OK, exit 0`. Пустой файл — то же самое.
+
+Docstring `_parse_policy` говорит, что парсер написан вручную, чтобы отсутствие
+PyYAML не отключило контроль молча. Опечатку он отрабатывает ровно тем способом,
+который этой фразой запрещён: «Anything else is ignored» — и запрет, и дыра в
+одном абзаце.
+
+Три отказа вместо трёх умолчаний:
+
+```python
+KNOWN_SECTIONS = ("exclusions", "scan_noise")
+
+
+def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
+    """Parse the narrow YAML subset used by excluded-paths.yml.
+
+    Written by hand rather than with PyYAML so a missing dependency cannot
+    silently disable the policy. That reasoning applies just as much to a
+    typo: `exclusion:` for `exclusions:` used to parse to zero rules and let
+    every excluded path through, which is the same failure the hand-rolled
+    parser exists to prevent. Unrecognised sections and rules without a
+    pattern are refusals now, not omissions.
+    """
+```
+
+- незнакомый ключ верхнего уровня → `ValidationError`-подобный отказ с перечнем
+  допустимых;
+- запись в `exclusions` без `pattern` → отказ с номером записи, а не тихое
+  выбрасывание через `[e for e in exclusions if e.get("pattern")]`;
+- в `load_policy` — отказ, если разобрано ноль правил: «a policy that excludes
+  nothing is not a policy, it is a disabled control».
+
+Тесты: каждая из трёх форм порчи даёт non-zero у CLI; корректная политика
+работает как прежде. Мутационная проверка: вернуть «ignore unknown», убедиться
+что тест с `exclusion:` краснеет.
+
+- [x] **Step 2: Резервный валидатор мельче схемы**
+
+Без `jsonschema`: `"CWE-416 "` с хвостовым пробелом обходит `RUNTIME_PROOF_CWES`,
+а `start_line: 0` доходит до SARIF вопреки `minimum: 1`. Фолбэк не знает про
+`pattern`, `minimum` и `maxLength`.
+
+Добавить их обработку в `_fallback_validate` — те же ключи, что реально
+используются в двух схемах, не больше.
+
+Отдельно `check_consistency` нормализует CWE перед сравнением:
+
+```python
+    cwes = {value.strip().upper() for value in verdict.get("cwe", [])}
+```
+
+Нормализация здесь дешёвая, а цена промаха — пропуск отказа по классам, которые
+статикой не подтверждаются вовсе. Не полагаться на то, что схема поймает пробел:
+на машине без `jsonschema` схему исполняет фолбэк.
+
+Тесты гонять с принудительно отключённым `jsonschema`, иначе они проверяют не тот
+код: параметризовать через подмену импорта.
+
+- [x] **Step 3: Контракт строки лога, общий для писателя и читателя**
+
+Проверено: лог со старым заголовком `record_verdict` отвергает, а `metrics.py`
+на нём же выдаёт успешные `{"total": 0}`. Один файл, два компонента,
+противоположные вердикты, и молчаливо-успокаивающий из них неверен.
+
+Первая редакция этого шага предписывала вызвать `check_log_compatible` из
+метрик — и была мельче, чем нужно потребителю, ровно как дефекты, которые она
+чинит. Эта функция сверяет заголовок и непустые схемы; строки она не проверяет.
+После такого «исправления» лог с правильным заголовком и мусором в строках
+по-прежнему давал бы успокаивающие цифры.
+
+**Контракт выводится из того, на что опирается `collapse`**, а не из того, что
+удобно проверить:
+
+| Поле | Требование | Почему |
+|---|---|---|
+| `finding_id` | непустая строка без пробелов | ключ группировки; `collapse` молча пропускает строки с пустым, то есть строка есть, а в метриках её нет |
+| `recorded_at` | разбирается в осведомлённый момент | ключ очерёдности; сейчас негодное значение становится `datetime.min` и бесшумно выигрывает или проигрывает сортировку |
+| `id_scheme` | непустая и равная текущей | сейчас сравниваются только непустые, поэтому пустая проходит |
+| тип строки | ровно одно из полей `initial_verdict` и `human_decision` непусто | строка без типа игнорируется молча, а при двух полях `collapse` выбирает ветку вердикта и теряет семантику решения |
+| полнота | ни одного `None` среди значений | `csv.DictReader` отдаёт `None` за обрезанную строку |
+
+Реализовать **внутри `check_log_compatible`**, а не рядом. Отдельная функция
+разошлась бы с этой при первой же правке — что и произошло между писателем и
+читателем. Одна точка входа, один контракт, оба вызывающих получают его целиком.
+
+Docstring обязан назвать глубину и причину:
+
+    Refuse a log whose shape, identity scheme or rows we cannot rely on.
+
+    Checked to the depth collapse() actually uses: it groups by finding_id,
+    orders by recorded_at, and tells verdict rows from decision rows by which
+    of two fields is populated. A row failing any of those is not skipped and
+    not coerced. A metric computed from data the reader had to guess at is
+    worse than no metric, because it gets quoted with the same confidence.
+
+Сообщение об отказе называет номер строки и конкретное нарушение — иначе
+исправить лог нельзя, а он append-only.
+
+`metrics.py` вызывает её перед чтением, импортируя из `record_verdict`, как это
+делает `record_human_decision`. `record_verdict` уже вызывает.
+
+**Строгость осознанная.** Одна негодная строка блокирует дальнейшую запись, пока
+её не починят вручную. Для аудит-трейла это верно: альтернатива — продолжать
+писать в файл, часть которого мы уже не понимаем.
+
+Тесты: по одному на каждую строку таблицы, плюс валидный лог проходит. У
+`make metrics` несовместимый лог даёт non-zero, а не нули. Мутационная проверка:
+снять проверку `recorded_at`, убедиться что тест с негодным временем краснеет на
+порядке, а не на чём-то ещё.
+
+- [x] **Step 4: Идентификаторы моделей не нормализуются**
+
+Проверено: `--agent ''` доходит до записи с exit 0. `--agent 'model-b '` против
+`--validator 'model-b'` расходятся на пробеле, и контроль независимости
+пропускает один и тот же движок.
+
+Пробел обходит механизм, который вся программа объявила своим основанием.
+
+```python
+def _identity(value: str, flag: str) -> str:
+    """Normalise a model identifier supplied by the engineer.
+
+    Independence is decided by comparing these two strings, so a trailing space
+    is enough to let one model validate itself. Compared case-folded for the
+    same reason: nobody intends Model-B and model-b to be different reviewers.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{flag} must not be empty")
+    return cleaned
+```
+
+Хранить очищенное значение, сравнивать `casefold()`. Пустая строка — ошибка
+разбора аргументов, а не молчаливое прохождение.
+
+Тесты: пустой `--agent`; совпадение по пробелу; совпадение по регистру. Все три —
+non-zero, ни лога, ни SARIF. Проверки отсутствия внутри `temp_tree`.
+
+- [x] **Step 5: Имя выходного файла берётся из поля, написанного моделью**
+
+Проверено: `finding_id: "/virtual/outside"` при `--out /virtual/packets` уводит
+запись за пределы каталога. `finding_id` приходит из JSON, который писала модель,
+и схема требует от него только `minLength: 1`.
+
+Два уровня, потому что один здесь недостаточен:
+
+- в `templates/verdict.schema.json` и `challenge.schema.json` у `finding_id`
+  появляется `"pattern": "^F-[0-9a-f]{12}$"` — ровно то, что порождает
+  `_digest`;
+- в `build_packet` перед записью проверяется, что разрешённый путь остаётся
+  внутри `--out`:
+
+```python
+    out_dir = args.out.resolve()
+    path = (out_dir / f"{packet['finding_id']}-challenge.json").resolve()
+    if out_dir not in path.parents:
+        print(f"REFUSED: {packet['finding_id']!r} would write outside {out_dir}.",
+              file=sys.stderr)
+        return 2
+```
+
+Схема одна не спасает: на машине без `jsonschema` её исполняет фолбэк, а
+поддержку `pattern` он получает только в Step 2. Проверка пути не зависит ни от
+того, ни от другого.
+
+Тесты: `finding_id` с `/` и с `..` отвергаются обеими проверками по отдельности.
+
+- [x] **Step 6: Известные ограничения — записать, не чинить**
+
+Оба минорных пункта реальны и оба остаются:
+
+- `make check-template` доказывает отсутствие плейсхолдеров, а не осмысленность
+  содержимого. Заполненный мусором `CLAUDE.md` его пройдёт. Записать в
+  `docs/03` рядом с пре-флайт чек-листом: этот шлюз проверяет форму, а
+  содержание проверяет человек, который его заполнял.
+- Проверка области и последующее открытие файла не атомарны. В рабочем каталоге,
+  который кто-то меняет параллельно, между ними есть окно. Закрывается только
+  чтением через дескриптор, что несоразмерно ручному процессу с одним инженером.
+  Записать в `docs/03` как известное ограничение с явной границей применимости.
+
+Ограничение, записанное честно, лучше контроля, который притворяется полным.
+
+---
+
 ## Definition of Done
 
 - `make test` зелёный на голом Python 3.9+ без единой установки.

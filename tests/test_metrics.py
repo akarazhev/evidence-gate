@@ -15,6 +15,7 @@ def row(**overrides) -> dict:
     base = {
         "reviewed_at": "2020-01-01T00:00:00+00:00",
         "recorded_at": "2026-09-01T10:00:00+00:00", "finding_id": "F-000000000001",
+        "id_scheme": "content-v1",
         "severity": "medium", "evidence_level": "traced", "confidence": "high",
         "initial_verdict": "true_positive", "challenge_result": "upheld",
         "final_state": "confirmed", "minutes_spent": "10",
@@ -31,7 +32,69 @@ def compute(rows):
 
 
 def decision(finding_id, value, recorded_at="2026-09-02T10:00:00+00:00"):
-    return {"finding_id": finding_id, "human_decision": value, "recorded_at": recorded_at}
+    return {
+        "finding_id": finding_id,
+        "id_scheme": "content-v1",
+        "human_decision": value,
+        "recorded_at": recorded_at,
+    }
+
+
+class TestLogContractProcess(unittest.TestCase):
+    def run_metrics(self, log):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "metrics.py"),
+                "--log",
+                str(log),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_incompatible_header_is_refused_instead_of_reporting_zero(self):
+        with temp_tree({"triage-log.csv": "reviewed_at,finding_id\n2026-01-01,F-1\n"}) as root:
+            proc = self.run_metrics(root / "triage-log.csv")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertNotIn('"total": 0', proc.stdout)
+            self.assertIn("incompatible header", proc.stderr)
+
+    def test_malformed_recorded_at_is_refused_before_it_can_change_order(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [
+                row(recorded_at="2026-09-01T10:00:00+00:00"),
+                decision("F-000000000001", "accepted", "not-a-time"),
+            ])
+            proc = self.run_metrics(log)
+            if proc.returncode == 0:
+                rendered = json.loads(proc.stdout)
+                self.assertEqual(
+                    rendered["human_decisions"],
+                    1,
+                    "malformed recorded_at was coerced into the wrong event order",
+                )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("recorded_at", proc.stderr)
+
+    def test_whitespace_verdict_marker_cannot_hide_a_human_decision(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [
+                row(initial_verdict=" ", human_decision="accepted"),
+            ])
+            proc = self.run_metrics(log)
+            if proc.returncode == 0:
+                rendered = json.loads(proc.stdout)
+                self.assertEqual(
+                    rendered["human_decisions"],
+                    1,
+                    "collapse classified the raw whitespace marker as a verdict",
+                )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("whitespace-only", proc.stderr)
 
 
 class TestRecordedOrder(unittest.TestCase):
@@ -245,16 +308,14 @@ class TestChronologicalTimestamps(unittest.TestCase):
         del missing["recorded_at"]
         self.assertEqual(metrics.collapse([row(), missing])[0]["final_state"], "confirmed")
 
-    def test_since_cli_compares_aware_instants_and_unqualified_utc(self):
+    def test_since_cli_compares_aware_instants(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
             write_log(log, [
                 row(finding_id="F-before", recorded_at="2026-09-01T12:00:00+03:00"),
                 row(finding_id="F-equal", recorded_at="2026-09-01T09:30:00Z"),
-                row(finding_id="F-naive", recorded_at="2026-09-01T10:00:00"),
+                row(finding_id="F-aware", recorded_at="2026-09-01T10:00:00+00:00"),
                 row(finding_id="F-after", recorded_at="2026-09-01T10:00:00+00:00"),
-                row(finding_id="F-invalid", recorded_at="invalid"),
-                row(finding_id="F-missing", recorded_at=""),
             ])
             for cutoff in ("2026-09-01T11:30:00+02:00", "2026-09-01T09:30:00"):
                 with self.subTest(cutoff=cutoff):
@@ -265,7 +326,7 @@ class TestChronologicalTimestamps(unittest.TestCase):
                     self.assertEqual(proc.returncode, 0, proc.stderr)
                     self.assertEqual(json.loads(proc.stdout)["total"], 3)
                     kept = metrics.filter_since(metrics.collapse(metrics.load_rows(log)), cutoff)
-                    self.assertEqual({record["finding_id"] for record in kept}, {"F-equal", "F-naive", "F-after"})
+                    self.assertEqual({record["finding_id"] for record in kept}, {"F-equal", "F-aware", "F-after"})
 
     def test_since_uses_explicit_minimum_for_malformed_or_missing_values(self):
         records = [{"finding_id": "F-invalid", "last_event_at": "bad"}, {"finding_id": "F-missing"}]

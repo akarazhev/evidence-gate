@@ -443,8 +443,15 @@ def main() -> int:
             parser.error("--challenge requires --verdict")
         verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
         packet = build_challenge_packet(verdict)
-        args.out.mkdir(parents=True, exist_ok=True)
-        path = args.out / f"{packet['finding_id']}-challenge.json"
+        out_dir = args.out.resolve()
+        path = (out_dir / f"{packet['finding_id']}-challenge.json").resolve()
+        if out_dir not in path.parents:
+            print(
+                f"REFUSED: {packet['finding_id']!r} would write outside {out_dir}.",
+                file=sys.stderr,
+            )
+            return 2
+        out_dir.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(packet, indent=2), encoding="utf-8")
         print(f"Challenge packet: {path}")
         print("Open a FRESH session on a DIFFERENT model, load "

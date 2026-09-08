@@ -589,3 +589,90 @@
   failing prematurely on the old schema's additional-property rejection.
 - Step 6 backfills both original and review-follow-up GREEN commits for
   Tasks 21 and 22 from the actual local branch history.
+
+## Task 25 schema-keyword correction
+
+- Before: Step 2 named numeric `maximum`, but neither shipped schema uses that
+  keyword; the challenge schema uses string `maxLength` for `verdict_digest`.
+- After: Step 2 names and tests `pattern`, numeric `minimum`, and string
+  `maxLength`, exactly the constraint keywords present in the two schemas.
+- Why: implementing an unused keyword would leave the real fallback/schema gap
+  open while expanding the handwritten validator beyond its stated boundary.
+
+## Task 25 exclusive log-row type
+
+- Before: Step 3 allowed a non-empty `initial_verdict` or `human_decision`
+  without saying what happens when both are populated.
+- After: the plan requires exactly one. Its table records that `collapse()`
+  takes the verdict branch first, so accepting both silently discards the
+  decision semantics.
+- Why: exclusivity is part of the reader's real consumer-depth contract.
+
+## Task 25 challenge output filename correction
+
+- Before: Step 5's containment snippet used `<finding_id>.json`, although the
+  established public challenge packet name is `<finding_id>-challenge.json`.
+- After: the snippet preserves the `-challenge.json` suffix while resolving
+  and checking the output path.
+- Why: the shorter filename was a transcription error, not an authorized
+  compatibility break.
+
+## Task 25 execution contract and evidence surface
+
+- Before: the user-authored Task 25 described the controls but omitted the
+  exact files, sequential RED/GREEN and mutation-restoration procedure, final
+  commands, staging verification, and one-commit contract.
+- After: Task 25 records the exact surface, base and branch boundaries, forced
+  fallback execution, five isolated mutations, focused/full verification,
+  smoke checks, Task 24 GREEN backfill, exact staging, and commit subject
+  `fix: close second-review control gaps`.
+- Why: the controller requires causal evidence and a reproducible single
+  change set without altering the user-selected control behavior.
+
+## Task 25 stale human-decision fixture discovered during implementation
+
+- Before: the expected file list omitted `tests/test_human_decision.py`, whose
+  shared `verdict_row()` fixture had no `recorded_at`. The new required row
+  contract therefore refused the fixture before those tests reached their own
+  behavior.
+- After: the controller authorized adding that test file to Task 25's exact
+  surface and staging. Its shared verdict fixture carries an aware
+  `recorded_at`, matching rows written by the real recorder.
+- Why: this is a stale-fixture and incomplete-file-list correction. Weakening
+  `check_log_compatible` would reopen the control gap Step 3 exists to close.
+
+## Task 25 fix round 1: consumer-aligned event classification
+
+- Before: `check_log_compatible()` stripped the two event markers before
+  classifying a row, while `metrics.collapse()` branches on their raw string
+  truthiness. A whitespace-only verdict marker plus a real human decision
+  passed the contract but was consumed as a verdict, discarding the decision.
+- After: whitespace-only populated event markers are refused, then the shared
+  contract uses the same raw truth predicates as its consumer. Regressions
+  cover the metrics mismatch and both writer artifacts remaining byte-for-byte
+  unchanged on refusal.
+- Why: exclusivity has to be enforced at the consumer's actual classification
+  depth, not only on normalized values the consumer never sees.
+
+## Task 25 fix round 1: bare YAML exclusion boundary
+
+- Before: the fallback policy parser recognized only `- `, not a bare `-`.
+  Fields from a bare-marker second exclusion could therefore merge into a
+  preceding valid rule and evade the missing-pattern refusal.
+- After: both forms start a new exclusion. A real CLI regression supplies a
+  valid first rule and a bare-marker second rule, ensuring the independent
+  zero-rule guard cannot mask the malformed entry.
+- Why: every YAML list item must be validated independently even when its
+  inline mapping is empty.
+
+## Task 25 fix round 1: isolated maxLength evidence
+
+- Before: the shipped-schema `maxLength` regression used seventeen `a`
+  characters, which also violated the digest's fixed-width pattern. Removing
+  only the `maxLength` branch therefore left the test green.
+- After: a forced-fallback regression uses a minimal temporary schema whose
+  three-character lowercase value satisfies type, minimum, and pattern while
+  violating only a two-character maximum. Removing only `maxLength` now makes
+  that test fail causally.
+- Why: mutation evidence must establish that the named constraint branch—not
+  a neighboring validation rule—causes the refusal.

@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 POLICY_PATH = Path(__file__).resolve().parent.parent / "policy" / "excluded-paths.yml"
+KNOWN_SECTIONS = ("exclusions", "scan_noise")
 
 
 class ScopeViolation(Exception):
@@ -34,19 +35,36 @@ class ScopeViolation(Exception):
         super().__init__(f"{path} matches excluded pattern {pattern!r} ({reason})")
 
 
+class PolicyValidationError(ValueError):
+    """Raised when the exclusion policy cannot safely be interpreted."""
+
+
 def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
     """Parse the narrow YAML subset used by excluded-paths.yml.
 
-    Recognizes two top-level keys: a list of `- pattern:` mappings under
-    `exclusions`, and a list of bare strings under `scan_noise`. Anything else is
-    ignored. Written by hand rather than with PyYAML so that an environment
-    without the dependency fails loudly at parse time instead of quietly
-    skipping the policy.
+    Written by hand rather than with PyYAML so a missing dependency cannot
+    silently disable the policy. That reasoning applies just as much to a
+    typo: `exclusion:` for `exclusions:` used to parse to zero rules and let
+    every excluded path through, which is the same failure the hand-rolled
+    parser exists to prevent. Unrecognised sections and rules without a
+    pattern are refusals now, not omissions.
     """
     exclusions: list[dict] = []
     scan_noise: list[str] = []
     section = None
     current: dict | None = None
+    exclusion_index = 0
+
+    def finish_rule() -> None:
+        nonlocal current
+        if current is None:
+            return
+        if not current.get("pattern"):
+            raise PolicyValidationError(
+                f"exclusions entry {exclusion_index} has no pattern"
+            )
+        exclusions.append(current)
+        current = None
 
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].rstrip()
@@ -55,20 +73,24 @@ def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
 
         if not line.startswith((" ", "\t", "-")):
             key = line.split(":", 1)[0].strip()
-            if current is not None:
-                exclusions.append(current)
-                current = None
+            finish_rule()
+            if key not in KNOWN_SECTIONS:
+                allowed = ", ".join(KNOWN_SECTIONS)
+                raise PolicyValidationError(
+                    f"unknown top-level policy section {key!r}; "
+                    f"expected one of: {allowed}"
+                )
             section = key
             continue
 
         stripped = line.strip()
 
         if section == "exclusions":
-            if stripped.startswith("- "):
-                if current is not None:
-                    exclusions.append(current)
+            if stripped == "-" or stripped.startswith("- "):
+                finish_rule()
+                exclusion_index += 1
                 current = {}
-                stripped = stripped[2:].strip()
+                stripped = stripped[1:].strip()
             if current is not None and ":" in stripped:
                 k, v = stripped.split(":", 1)
                 current[k.strip()] = v.strip().strip("\"'")
@@ -76,10 +98,9 @@ def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
             if stripped.startswith("- "):
                 scan_noise.append(stripped[2:].strip().strip("\"'"))
 
-    if current is not None:
-        exclusions.append(current)
+    finish_rule()
 
-    return [e for e in exclusions if e.get("pattern")], scan_noise
+    return exclusions, scan_noise
 
 
 def load_policy(policy_path: Path = POLICY_PATH) -> tuple[list[dict], list[str]]:
@@ -87,7 +108,12 @@ def load_policy(policy_path: Path = POLICY_PATH) -> tuple[list[dict], list[str]]
         raise FileNotFoundError(
             f"Policy file missing: {policy_path}. Refusing to proceed without it."
         )
-    return _parse_policy(policy_path.read_text(encoding="utf-8"))
+    exclusions, scan_noise = _parse_policy(policy_path.read_text(encoding="utf-8"))
+    if not exclusions:
+        raise PolicyValidationError(
+            "a policy that excludes nothing is not a policy, it is a disabled control"
+        )
+    return exclusions, scan_noise
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -199,7 +225,11 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="Print active patterns")
     args = parser.parse_args()
 
-    exclusions, scan_noise = load_policy()
+    try:
+        exclusions, scan_noise = load_policy()
+    except (FileNotFoundError, PolicyValidationError) as exc:
+        print(f"POLICY ERROR: {exc}", file=sys.stderr)
+        return 2
 
     if args.list:
         print(f"Exclusions ({len(exclusions)}) - must not enter agent context:")

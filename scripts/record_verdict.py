@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,19 @@ RUNTIME_PROOF_CWES = {
 
 class ValidationError(Exception):
     pass
+
+
+def _identity(value: str, flag: str) -> str:
+    """Normalise a model identifier supplied by the engineer.
+
+    Independence is decided by comparing these two strings, so a trailing space
+    is enough to let one model validate itself. Compared case-folded for the
+    same reason: nobody intends Model-B and model-b to be different reviewers.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{flag} must not be empty")
+    return cleaned
 
 
 def validate(instance: dict, schema_name: str) -> None:
@@ -103,12 +117,13 @@ def _type_ok(value, expected) -> bool:
 
 
 def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
-    """Minimal validator covering required keys, enums, types and array items.
+    """Validate the schema subset used by the verdict and challenge contracts.
 
-    Not a full draft-07 implementation: `allOf`, `oneOf`, `$ref` and pattern
-    matching are out of scope. The two conditional rules the verdict schema
-    relies on are enforced separately by check_consistency, and a test guards
-    against the schema growing a third.
+    This is not a full draft-07 implementation. It covers required keys,
+    enums, types, array items, pattern, minimum, minLength and maxLength: the
+    keywords the two shipped schemas actually use. The two conditional rules
+    in the verdict schema are enforced separately by check_consistency, and a
+    test guards against the schema growing a third.
     """
     if not isinstance(instance, dict):
         raise ValidationError(
@@ -127,19 +142,7 @@ def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
                 raise ValidationError(f"{name}: unexpected field {key!r}")
             continue
 
-        if "enum" in spec and value not in spec["enum"]:
-            raise ValidationError(f"{name}: {key}={value!r} not in {spec['enum']}")
-
-        if "type" in spec and not _type_ok(value, spec["type"]):
-            raise ValidationError(
-                f"{name}: {key} should be {spec['type']}, got {type(value).__name__}"
-            )
-
-        if spec.get("minLength") and isinstance(value, str):
-            if len(value) < spec["minLength"]:
-                raise ValidationError(
-                    f"{name}: {key} shorter than {spec['minLength']} chars"
-                )
+        _fallback_check_value(value, spec, f"{name}: {key}")
 
         if isinstance(value, dict) and spec.get("properties"):
             _fallback_validate(value, spec, f"{name}.{key}")
@@ -152,11 +155,39 @@ def _fallback_validate(instance: dict, schema: dict, name: str) -> None:
                     if not isinstance(item, dict):
                         raise ValidationError(f"{label}: expected an object")
                     _fallback_validate(item, item_spec, label)
-                elif "type" in item_spec and not _type_ok(item, item_spec["type"]):
-                    raise ValidationError(
-                        f"{label}: should be {item_spec['type']}, "
-                        f"got {type(item).__name__}"
-                    )
+                else:
+                    _fallback_check_value(item, item_spec, label)
+
+
+def _fallback_check_value(value, spec: dict, label: str) -> None:
+    if "enum" in spec and value not in spec["enum"]:
+        raise ValidationError(f"{label}={value!r} not in {spec['enum']}")
+
+    if "type" in spec and not _type_ok(value, spec["type"]):
+        raise ValidationError(
+            f"{label} should be {spec['type']}, got {type(value).__name__}"
+        )
+
+    if isinstance(value, str):
+        if "minLength" in spec and len(value) < spec["minLength"]:
+            raise ValidationError(
+                f"{label} shorter than {spec['minLength']} chars"
+            )
+        if "maxLength" in spec and len(value) > spec["maxLength"]:
+            raise ValidationError(
+                f"{label} longer than {spec['maxLength']} chars"
+            )
+        if "pattern" in spec and re.search(spec["pattern"], value) is None:
+            raise ValidationError(
+                f"{label}={value!r} does not match {spec['pattern']!r}"
+            )
+
+    if "minimum" in spec and isinstance(value, (int, float)):
+        if value < spec["minimum"]:
+            raise ValidationError(
+                f"{label}={value!r} is below minimum {spec['minimum']}"
+            )
+
 
 
 def check_consistency(verdict: dict) -> list[str]:
@@ -180,7 +211,7 @@ def check_consistency(verdict: dict) -> list[str]:
             "evidence_level=traced requires a populated data_flow array"
         )
 
-    cwes = set(verdict.get("cwe", []))
+    cwes = {value.strip().upper() for value in verdict.get("cwe", [])}
     if cwes & RUNTIME_PROOF_CWES and not verdict.get("requires_runtime_proof"):
         overlap = ", ".join(sorted(cwes & RUNTIME_PROOF_CWES))
         problems.append(
@@ -274,12 +305,13 @@ def append_log(row: dict, path: Path = LOG_PATH) -> None:
 
 
 def check_log_compatible(path: Path, id_scheme: str) -> None:
-    """Refuse to append to a log whose shape or identity scheme differs.
+    """Refuse a log whose shape, identity scheme or rows we cannot rely on.
 
-    Two separate hazards. A stale header means csv.DictWriter writes new rows
-    under old column names and every field lands in the wrong place. A foreign
-    id_scheme means the same finding carries a different id in older rows, so
-    metrics would count one finding as two and nobody would notice.
+    Checked to the depth collapse() actually uses: it groups by finding_id,
+    orders by recorded_at, and tells verdict rows from decision rows by which
+    of two fields is populated. A row failing any of those is not skipped and
+    not coerced. A metric computed from data the reader had to guess at is
+    worse than no metric, because it gets quoted with the same confidence.
     """
     if not path.exists():
         return
@@ -293,32 +325,75 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
             # agree about what an empty file means, or a row lands where the
             # header belongs.
             return
-        schemes = set()
-        if "id_scheme" in header:
-            column = header.index("id_scheme")
-            for row in reader:
-                if len(row) > column and row[column]:
-                    schemes.add(row[column])
 
-    if header != LOG_FIELDS:
-        missing = [f for f in LOG_FIELDS if f not in header] or ["none"]
-        extra = [f for f in header if f not in LOG_FIELDS] or ["none"]
-        raise ValidationError(
-            f"{path} has an incompatible header.\n"
-            f"  missing columns: {', '.join(missing)}\n"
-            f"  unexpected columns: {', '.join(extra)}\n"
-            "Archive the existing findings/ directory, or migrate the log, "
-            "before recording new verdicts."
-        )
+        if header != LOG_FIELDS:
+            missing = [f for f in LOG_FIELDS if f not in header] or ["none"]
+            extra = [f for f in header if f not in LOG_FIELDS] or ["none"]
+            raise ValidationError(
+                f"{path} has an incompatible header.\n"
+                f"  missing columns: {', '.join(missing)}\n"
+                f"  unexpected columns: {', '.join(extra)}\n"
+                "Archive the existing findings/ directory, or migrate the log, "
+                "before recording new verdicts."
+            )
 
-    foreign = sorted(s for s in schemes if s != id_scheme)
-    if foreign:
-        raise ValidationError(
-            f"{path} contains rows written under identity scheme(s) "
-            f"{', '.join(foreign)}, but this run uses {id_scheme}.\n"
-            "The same finding carries a different id under each scheme, so the "
-            "two cannot share a log. Archive findings/ and re-triage."
-        )
+        for line_number, row in enumerate(
+            csv.DictReader(fh, fieldnames=header), start=2
+        ):
+            if any(value is None for value in row.values()):
+                raise ValidationError(
+                    f"{path} row {line_number} is truncated; every log column "
+                    "must have a value"
+                )
+
+            finding_id = row["finding_id"]
+            if not finding_id or any(char.isspace() for char in finding_id):
+                raise ValidationError(
+                    f"{path} row {line_number} has invalid finding_id "
+                    f"{finding_id!r}; it must be non-empty and contain no whitespace"
+                )
+
+            recorded_at = row["recorded_at"]
+            try:
+                recorded = datetime.fromisoformat(
+                    recorded_at.replace("Z", "+00:00")
+                )
+            except ValueError as exc:
+                raise ValidationError(
+                    f"{path} row {line_number} has invalid recorded_at "
+                    f"{recorded_at!r}; expected an ISO-8601 timestamp with timezone"
+                ) from exc
+            if recorded.tzinfo is None or recorded.utcoffset() is None:
+                raise ValidationError(
+                    f"{path} row {line_number} has naive recorded_at "
+                    f"{recorded_at!r}; a timezone is required"
+                )
+
+            scheme = row["id_scheme"]
+            if not scheme or scheme != id_scheme:
+                raise ValidationError(
+                    f"{path} row {line_number} has id_scheme {scheme!r}; "
+                    f"expected {id_scheme!r}"
+                )
+
+            for field in ("initial_verdict", "human_decision"):
+                marker = row[field]
+                if marker and not marker.strip():
+                    raise ValidationError(
+                        f"{path} row {line_number} has whitespace-only {field}; "
+                        "event markers must be empty or meaningful"
+                    )
+
+            # collapse() branches on the raw strings. Whitespace-only values
+            # are refused above so these exact predicates now classify a row
+            # identically in the contract and its consumer.
+            is_verdict = bool(row["initial_verdict"])
+            is_decision = bool(row["human_decision"])
+            if is_verdict == is_decision:
+                raise ValidationError(
+                    f"{path} row {line_number} must populate exactly one of "
+                    "initial_verdict and human_decision"
+                )
 
 
 def verdict_rows(path: Path, finding_id: str) -> list[dict]:
@@ -500,6 +575,13 @@ def main() -> int:
                         help="Exit non-zero unless the finding reaches a terminal state")
     args = parser.parse_args()
 
+    try:
+        args.agent = _identity(args.agent, "--agent")
+        if args.validator is not None:
+            args.validator = _identity(args.validator, "--validator")
+    except ValueError as exc:
+        parser.error(str(exc))
+
     if args.challenge and not args.validator:
         parser.error("--validator is required when --challenge is given")
 
@@ -509,7 +591,7 @@ def main() -> int:
             "validated nothing"
         )
 
-    if args.validator and args.agent == args.validator:
+    if args.validator and args.agent.casefold() == args.validator.casefold():
         print("REFUSED: triage and validation ran on the same model.\n", file=sys.stderr)
         print(f"  agent:     {args.agent}", file=sys.stderr)
         print(f"  validator: {args.validator}\n", file=sys.stderr)

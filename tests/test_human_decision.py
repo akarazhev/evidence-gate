@@ -21,6 +21,7 @@ SCRIPT = REPO_ROOT / "scripts" / "record_human_decision.py"
 def verdict_row(fid="F-000000000001"):
     return {
         "reviewed_at": "2026-09-01T10:00:00+00:00",
+        "recorded_at": "2026-09-01T10:00:00+00:00",
         "finding_id": fid,
         "id_scheme": "content-v1",
         "initial_verdict": "true_positive",

@@ -149,6 +149,21 @@ accuracy metric mean anything, and a shared schema would blur it.
 `--by` takes a role or a work handle. Not a name, not an email address: this
 log is committed, so whatever goes there becomes permanent repository history.
 
+## Known limits of the manual controls
+
+`make check-template` checks form, not meaning. It proves that no template
+placeholders remain in `CLAUDE.md`; it cannot prove that the replacement text
+describes real entry points and trust boundaries. The engineer who fills the
+file must review its substance before the pre-flight check can be treated as
+complete.
+
+The scope check and the later file open are not atomic. Another process can
+replace a checked path in the interval between them. Closing that race requires
+descriptor-based reads throughout the packet builder, which is disproportionate
+for this workflow's intended boundary: one engineer working in a repository
+that no other process is modifying concurrently. Do not rely on this manual
+workflow in a concurrently mutating working tree.
+
 ## Pre-flight checklist
 
 Before the first real review:

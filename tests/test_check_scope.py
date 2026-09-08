@@ -39,15 +39,74 @@ class TestParsePolicy(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             check_scope.load_policy(FIXTURES / "does-not-exist.yml")
 
-    def test_rules_without_a_pattern_are_dropped(self):
-        exclusions, _ = check_scope._parse_policy(
-            "exclusions:\n"
-            "  - owner: appsec\n"
-            "    reason: no pattern key\n"
-            '  - pattern: "**/id_rsa"\n'
-            "    owner: appsec\n"
+    def test_rule_without_a_pattern_is_refused(self):
+        with self.assertRaises(ValueError):
+            check_scope._parse_policy(
+                "exclusions:\n"
+                "  - owner: appsec\n"
+                "    reason: no pattern key\n"
+                '  - pattern: "**/id_rsa"\n'
+                "    owner: appsec\n"
+            )
+
+
+class TestPolicyProcess(unittest.TestCase):
+    def run_with_policy(self, policy):
+        files = {
+            "scripts/check_scope.py": (
+                REPO_ROOT / "scripts" / "check_scope.py"
+            ).read_text(encoding="utf-8"),
+            "policy/excluded-paths.yml": policy,
+            ".env": "SECRET=value\n",
+        }
+        with temp_tree(files) as repo:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(repo / "scripts" / "check_scope.py"),
+                    "--repo",
+                    str(repo),
+                    ".env",
+                ],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_cli_refuses_unknown_policy_section(self):
+        proc = self.run_with_policy(
+            'exclusions:\n  - pattern: "**/*.pem"\n'
+            'exclusion:\n  - pattern: "**/.env"\n'
         )
-        self.assertEqual([r["pattern"] for r in exclusions], ["**/id_rsa"])
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("exclusion", proc.stderr)
+        self.assertIn("exclusions", proc.stderr)
+        self.assertIn("scan_noise", proc.stderr)
+
+    def test_cli_refuses_exclusion_without_pattern(self):
+        proc = self.run_with_policy(
+            "exclusions:\n  - owner: appsec\n    reason: missing pattern\n"
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("entry 1", proc.stderr)
+        self.assertIn("pattern", proc.stderr)
+
+    def test_cli_refuses_bare_list_entry_without_pattern(self):
+        proc = self.run_with_policy(
+            'exclusions:\n  - pattern: "**/*.pem"\n'
+            "    owner: first\n"
+            "  -\n"
+            "    owner: second\n"
+            "    reason: missing pattern\n"
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("entry 2", proc.stderr)
+        self.assertIn("pattern", proc.stderr)
+
+    def test_cli_refuses_policy_with_zero_rules(self):
+        proc = self.run_with_policy("")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("disabled control", proc.stderr)
 
 
 class TestMatches(unittest.TestCase):

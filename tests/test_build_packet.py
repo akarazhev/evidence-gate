@@ -33,6 +33,41 @@ class TestChallengeRevisionPacket(unittest.TestCase):
         self.assertIn("verbatim", packet["instructions"])
 
 
+class TestChallengeOutputContainment(unittest.TestCase):
+    def test_model_supplied_finding_id_cannot_escape_output_directory(self):
+        with temp_tree({}) as root:
+            cases = (
+                (str(root / "outside-absolute"), root / "outside-absolute-challenge.json"),
+                ("../outside-relative", root / "outside-relative-challenge.json"),
+            )
+            for finding_id, outside in cases:
+                with self.subTest(finding_id=finding_id):
+                    verdict = root / "verdict.json"
+                    verdict.write_text(
+                        json.dumps({"finding_id": finding_id, "verdict": "true_positive"}),
+                        encoding="utf-8",
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(REPO_ROOT / "scripts" / "build_packet.py"),
+                            "--challenge",
+                            "--verdict",
+                            str(verdict),
+                            "--out",
+                            str(root / "packets"),
+                        ],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertFalse(
+                        outside.exists(), "finding_id must not create a file outside --out"
+                    )
+                    self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                    self.assertIn("would write outside", proc.stderr)
+
+
 class TestLoadSarif(unittest.TestCase):
     def setUp(self):
         self.results = build_packet.load_sarif_results(SARIF)

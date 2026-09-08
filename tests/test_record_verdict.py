@@ -6,12 +6,14 @@ is a defect of the same kind this whole workflow exists to catch.
 """
 
 import csv
+import builtins
 import hashlib
 import json
 import subprocess
 import sys
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
 import record_verdict
 import build_packet
@@ -90,6 +92,11 @@ class TestCheckConsistency(unittest.TestCase):
 
     def test_memory_safety_cwe_requires_runtime_proof(self):
         problems = record_verdict.check_consistency(make_verdict(cwe=["CWE-416"]))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("CWE-416", problems[0])
+
+    def test_memory_safety_cwe_is_normalised_before_comparison(self):
+        problems = record_verdict.check_consistency(make_verdict(cwe=[" cwe-416 "]))
         self.assertEqual(len(problems), 1)
         self.assertIn("CWE-416", problems[0])
 
@@ -426,6 +433,83 @@ class TestIndependenceControl(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("REFUSED", proc.stderr)
 
+    def test_whitespace_event_marker_refuses_before_writer_changes_artifacts(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            write_log(log, [{
+                "finding_id": "F-000000000002",
+                "recorded_at": "2026-09-01T10:00:00+00:00",
+                "id_scheme": "content-v1",
+                "initial_verdict": " ",
+                "human_decision": "accepted",
+            }])
+            sarif = root / "reviewed.sarif"
+            sarif.write_text(
+                json.dumps(record_verdict.sarif_document([])), encoding="utf-8"
+            )
+            before_log = log.read_bytes()
+            before_sarif = sarif.read_bytes()
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ],
+                root,
+            )
+            self.assertEqual(log.read_bytes(), before_log)
+            self.assertEqual(sarif.read_bytes(), before_sarif)
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("whitespace-only", proc.stderr)
+
+    def test_empty_agent_is_refused_without_writes(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "",
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ],
+                root,
+            )
+            self.assertFalse(log.exists(), "empty --agent must not create the log")
+            self.assertFalse(sarif.exists(), "empty --agent must not write SARIF")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("--agent must not be empty", proc.stderr)
+
+    def test_whitespace_cannot_make_the_same_model_look_independent(self):
+        self.assert_identity_variants_refused("model-b ", "model-b")
+
+    def test_case_cannot_make_the_same_model_look_independent(self):
+        self.assert_identity_variants_refused("Model-B", "model-b")
+
+    def assert_identity_variants_refused(self, agent, validator):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--challenge", str(root / "challenge.json"),
+                    "--agent", agent,
+                    "--validator", validator,
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ],
+                root,
+            )
+            self.assertFalse(log.exists(), "same-model refusal must not create the log")
+            self.assertFalse(sarif.exists(), "same-model refusal must not write SARIF")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("same model", proc.stderr)
+
     def test_missing_agent_is_refused(self):
         with temp_tree({"placeholder": ""}) as root:
             self.setup_files(root)
@@ -538,6 +622,7 @@ class TestIndependenceControl(unittest.TestCase):
                 write_log(log, [{
                     "finding_id": "F-previous", "initial_verdict": "true_positive",
                     "id_scheme": "content-v1",
+                    "recorded_at": "2026-09-01T10:00:00+00:00",
                 }])
                 sarif = root / "reviewed.sarif"
                 sarif.write_text(json.dumps(record_verdict.sarif_document([result])), encoding="utf-8")
@@ -561,6 +646,7 @@ class TestIndependenceControl(unittest.TestCase):
                     write_log(log, [{
                         "finding_id": "F-previous", "initial_verdict": "true_positive",
                         "id_scheme": "content-v1",
+                        "recorded_at": "2026-09-01T10:00:00+00:00",
                     }])
                 before_log = log.read_bytes() if existing_log else None
                 sarif = root / "reviewed.sarif"
@@ -671,10 +757,72 @@ class TestLogCompatibility(unittest.TestCase):
             write_log(log, [])
             record_verdict.check_log_compatible(log, "content-v1")
 
+    def valid_row(self, **overrides):
+        row = {
+            "finding_id": "F-000000000001",
+            "recorded_at": "2026-09-01T10:00:00+00:00",
+            "id_scheme": "content-v1",
+            "initial_verdict": "true_positive",
+        }
+        row.update(overrides)
+        return row
+
+    def assert_row_refused(self, row, message):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [row])
+            with self.assertRaises(record_verdict.ValidationError) as caught:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("row 2", str(caught.exception))
+            self.assertIn(message, str(caught.exception))
+
+    def test_valid_row_is_accepted(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [self.valid_row()])
+            record_verdict.check_log_compatible(log, "content-v1")
+
+    def test_empty_or_whitespace_finding_id_is_refused(self):
+        for finding_id in ("", "F-000000 000001"):
+            with self.subTest(finding_id=finding_id):
+                self.assert_row_refused(
+                    self.valid_row(finding_id=finding_id), "finding_id"
+                )
+
+    def test_malformed_or_naive_recorded_at_is_refused(self):
+        for recorded_at in ("not-a-time", "2026-09-01T10:00:00"):
+            with self.subTest(recorded_at=recorded_at):
+                self.assert_row_refused(
+                    self.valid_row(recorded_at=recorded_at), "recorded_at"
+                )
+
+    def test_empty_id_scheme_is_refused(self):
+        self.assert_row_refused(self.valid_row(id_scheme=""), "id_scheme")
+
+    def test_row_must_be_exactly_one_event_type(self):
+        for row in (
+            self.valid_row(initial_verdict=""),
+            self.valid_row(human_decision="accepted"),
+        ):
+            with self.subTest(row=row):
+                self.assert_row_refused(row, "exactly one")
+
+    def test_truncated_row_is_refused(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            with log.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(record_verdict.LOG_FIELDS)
+                writer.writerow(["2026-09-01T10:00:00+00:00"])
+            with self.assertRaises(record_verdict.ValidationError) as caught:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("row 2", str(caught.exception))
+            self.assertIn("truncated", str(caught.exception))
+
     def test_foreign_id_scheme_is_refused(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
-            write_log(log, [{"finding_id": "F-1", "id_scheme": "line-v0"}])
+            write_log(log, [self.valid_row(id_scheme="line-v0")])
             with self.assertRaises(record_verdict.ValidationError) as ctx:
                 record_verdict.check_log_compatible(log, "content-v1")
             self.assertIn("line-v0", str(ctx.exception))
@@ -792,6 +940,8 @@ class TestSupersedeCli(unittest.TestCase):
 
             record_verdict.append_log({
                 "finding_id": "F-000000000001",
+                "id_scheme": "content-v1",
+                "recorded_at": "2026-09-02T12:00:00+00:00",
                 "human_decision": "accepted",
             }, root / "triage-log.csv")
 
@@ -862,6 +1012,17 @@ class TestFallbackValidator(unittest.TestCase):
     def validate(self, instance):
         record_verdict._fallback_validate(instance, self.SCHEMA, "fixture")
 
+    def validate_without_jsonschema(self, instance, schema_name):
+        real_import = builtins.__import__
+
+        def import_without_jsonschema(name, *args, **kwargs):
+            if name == "jsonschema":
+                raise ImportError("forced unavailable by fallback-path test")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=import_without_jsonschema):
+            record_verdict.validate(instance, schema_name)
+
     def test_missing_required_field(self):
         with self.assertRaises(record_verdict.ValidationError):
             self.validate({})
@@ -908,6 +1069,64 @@ class TestFallbackValidator(unittest.TestCase):
             record_verdict._fallback_validate(
                 [], {"type": "object", "properties": {}}, "fixture"
             )
+
+    def test_real_fallback_enforces_item_pattern(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate_without_jsonschema(
+                make_verdict(cwe=["CWE-416 "]), "verdict.schema.json"
+            )
+
+    def test_real_fallback_enforces_numeric_minimum(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate_without_jsonschema(
+                make_verdict(
+                    location={
+                        "file": "app/handler.py",
+                        "start_line": 0,
+                        "end_line": 4,
+                    }
+                ),
+                "verdict.schema.json",
+            )
+
+    def test_real_fallback_enforces_string_max_length(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate_without_jsonschema(
+                make_challenge(verdict_digest="a" * 17),
+                "challenge.schema.json",
+            )
+
+    def test_real_fallback_isolates_string_max_length(self):
+        schema = {
+            "type": "object",
+            "required": ["token"],
+            "additionalProperties": False,
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2,
+                    "pattern": "^[a-z]+$",
+                }
+            },
+        }
+        with temp_tree({"isolated.schema.json": json.dumps(schema)}) as root:
+            with mock.patch.object(record_verdict, "SCHEMA_DIR", root):
+                with self.assertRaises(record_verdict.ValidationError) as caught:
+                    self.validate_without_jsonschema(
+                        {"token": "abc"}, "isolated.schema.json"
+                    )
+        self.assertIn("longer than 2 chars", str(caught.exception))
+
+    def test_real_fallback_rejects_noncanonical_finding_ids_in_both_schemas(self):
+        for finding_id in ("/virtual/outside", "../outside"):
+            for document, schema_name in (
+                (make_verdict(finding_id=finding_id), "verdict.schema.json"),
+                (make_challenge(finding_id=finding_id), "challenge.schema.json"),
+            ):
+                with self.subTest(finding_id=finding_id, schema_name=schema_name):
+                    with self.assertRaises(record_verdict.ValidationError):
+                        self.validate_without_jsonschema(document, schema_name)
 
 
 class TestSchemaDriftGuard(unittest.TestCase):

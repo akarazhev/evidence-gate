@@ -18,7 +18,8 @@
     "finding_id": {
       "type": "string",
       "description": "Stable identifier from the review packet. Copy verbatim.",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^F-[0-9a-f]{12}$"
     },
     "rule_id": {
       "type": "string",

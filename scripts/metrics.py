@@ -11,6 +11,9 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from record_verdict import ID_SCHEME, ValidationError, check_log_compatible  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = REPO_ROOT / "findings" / "triage-log.csv"
 DECISION_FIELDS = (
@@ -19,6 +22,7 @@ DECISION_FIELDS = (
 
 
 def load_rows(path: Path) -> list[dict]:
+    check_log_compatible(path, ID_SCHEME)
     if not path.exists():
         return []
     with path.open(encoding="utf-8") as fh:
@@ -239,7 +243,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, default=LOG_PATH); parser.add_argument("--since"); parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    m = compute(filter_since(collapse(load_rows(args.log)), args.since))
+    try:
+        rows = load_rows(args.log)
+    except ValidationError as exc:
+        print(f"LOG ERROR: {exc}", file=sys.stderr)
+        return 1
+    m = compute(filter_since(collapse(rows), args.since))
     print(json.dumps(m, indent=2) if args.json else render(m))
     return 0
 
