@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Refuse to proceed while CLAUDE.md is still the shipped template.
+"""Refuse to proceed while CLAUDE.md still has shipped placeholders.
 
-The evidence standard rests on CLAUDE.md naming this repository's entry points
-and trust boundaries. Until it does, "traced" means nothing, because the agent
-cannot know what an attacker controls.
+This check proves only that recognizable template placeholders are absent. It
+cannot decide whether replacement prose names the real entry points and trust
+boundaries; that semantic review remains a human responsibility.
 
 Same shape as check_scope refusing without a policy file: a control that cannot
 read its input refuses, rather than reporting success. A shell `if grep` cannot
@@ -52,8 +52,8 @@ def main() -> int:
     except OSError as exc:
         print(f"REFUSED: cannot read {args.path}: {exc}", file=sys.stderr)
         print(
-            "\nThis check exists to prove the file describes this repository. "
-            "It cannot prove that about a file it cannot read.",
+            "\nThis check cannot establish that placeholders are absent from "
+            "a file it cannot read.",
             file=sys.stderr,
         )
         return 2
@@ -64,9 +64,9 @@ def main() -> int:
         for number, line in placeholders:
             print(f"  {number:>4}  {line}", file=sys.stderr)
         print(
-            "\nFill in trust boundaries, entry points and accepted patterns for "
-            "this repository. Until then the evidence standard is hollow: the "
-            "agent cannot know what an attacker controls.",
+            "\nReplace every placeholder, then have a person verify that the "
+            "resulting entry points, trust boundaries and accepted patterns "
+            "are accurate for this repository.",
             file=sys.stderr,
         )
         return 2

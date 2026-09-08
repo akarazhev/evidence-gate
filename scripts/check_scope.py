@@ -59,14 +59,16 @@ def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
         nonlocal current
         if current is None:
             return
-        if not current.get("pattern"):
-            raise PolicyValidationError(
-                f"exclusions entry {exclusion_index} has no pattern"
-            )
+        for field in ("pattern", "owner", "reason"):
+            value = current.get(field)
+            if not value or not value.strip():
+                raise PolicyValidationError(
+                    f"exclusions entry {exclusion_index} has no {field}"
+                )
         exclusions.append(current)
         current = None
 
-    for raw in text.splitlines():
+    for line_number, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
@@ -86,17 +88,28 @@ def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
         stripped = line.strip()
 
         if section == "exclusions":
-            if stripped == "-" or stripped.startswith("- "):
+            is_list_item = stripped == "-" or (
+                stripped.startswith("-")
+                and len(stripped) > 1
+                and stripped[1].isspace()
+            )
+            if is_list_item:
                 finish_rule()
                 exclusion_index += 1
                 current = {}
                 stripped = stripped[1:].strip()
+            if not stripped:
+                continue
             if current is not None and ":" in stripped:
                 k, v = stripped.split(":", 1)
-                current[k.strip()] = v.strip().strip("\"'")
+                current[k.strip()] = v.strip().strip("\"'").strip()
+                continue
+            raise PolicyValidationError(
+                f"unrecognized exclusions syntax on line {line_number}: {raw!r}"
+            )
         elif section == "scan_noise":
-            if stripped.startswith("- "):
-                scan_noise.append(stripped[2:].strip().strip("\"'"))
+            if stripped.startswith("-") and len(stripped) > 1 and stripped[1].isspace():
+                scan_noise.append(stripped[1:].strip().strip("\"'"))
 
     finish_rule()
 

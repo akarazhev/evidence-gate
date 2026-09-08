@@ -1,8 +1,8 @@
-"""Tests for the template control.
+"""Tests for the template-placeholder control.
 
-docs/03 tells the reader that a passing check-template proves CLAUDE.md
-describes this repository. The shell version reported success when the file was
-absent, so the claim was false in exactly the case that matters most.
+The check proves that recognizable placeholders are absent, not that arbitrary
+replacement prose is meaningful. The shell version reported success when the
+file was absent, so even that narrow claim was false in the case that matters.
 """
 
 import subprocess

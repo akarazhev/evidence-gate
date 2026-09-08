@@ -67,6 +67,9 @@ This finding must be reviewed without agent assistance.
 
 The check is dependency-free by design. It parses the policy file itself rather
 than importing a YAML library, so a missing package cannot silently disable it.
+Every exclusion must have a non-empty pattern, owner and reason; any line inside
+`exclusions` that the narrow parser cannot explain is refused with its line
+number instead of being ignored.
 
 It also covers every file in the scanner's dataflow trace, not just the flagged
 location. A taint path passing through an excluded module refuses the whole
@@ -172,8 +175,9 @@ Before the first real review:
 - [ ] Scanner version pinned and recorded in `docs/02-setup.md`
 - [ ] `excluded-paths.yml` reflects this project, every entry owned and explained
 - [ ] `make check-scope` output reviewed by whoever owns the restrictions
-- [ ] `make check-template` passes, so `CLAUDE.md` describes this repository
-      rather than the template
+- [ ] `make check-template` passes, so no template placeholders remain in
+      `CLAUDE.md`; its entry points and trust boundaries were reviewed by a
+      person for accuracy
 - [ ] Whoever records human decisions knows to use a role in `BY=`, never a
       name or an email address
 - [ ] One packet inspected by hand, end to end

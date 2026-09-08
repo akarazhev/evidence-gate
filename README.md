@@ -138,7 +138,9 @@ Documentation files follow an internal series, so the numbering has gaps.
   programme it grows without bound; rotate it yourself if that becomes a
   problem.
 - `make check-template` fails in this repository on purpose: `CLAUDE.md` here is
-  the template you copy and fill in per project.
+  the template you copy and fill in per project. The check proves only that no
+  template placeholders remain; it does not judge whether the replacement text
+  meaningfully describes the project.
 - A scanner upgrade can change finding ids. See `docs/02-setup.md`.
 
 ## License

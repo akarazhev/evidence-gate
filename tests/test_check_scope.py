@@ -49,6 +49,49 @@ class TestParsePolicy(unittest.TestCase):
                 "    owner: appsec\n"
             )
 
+    def test_whitespace_only_pattern_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "pattern"):
+            check_scope._parse_policy(
+                "exclusions:\n"
+                '  - pattern: "   "\n'
+                "    owner: appsec\n"
+                "    reason: empty patterns disable the rule\n"
+            )
+
+    def test_exclusion_without_owner_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "owner"):
+            check_scope._parse_policy(
+                "exclusions:\n"
+                '  - pattern: "**/.env"\n'
+                "    reason: Runtime secrets\n"
+            )
+
+    def test_exclusion_without_reason_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "reason"):
+            check_scope._parse_policy(
+                "exclusions:\n"
+                '  - pattern: "**/.env"\n'
+                "    owner: appsec\n"
+            )
+
+    def test_unrecognized_exclusion_line_is_refused_with_line_number(self):
+        with self.assertRaisesRegex(ValueError, "line 3"):
+            check_scope._parse_policy(
+                "exclusions:\n"
+                '  - pattern: "**/.env"\n'
+                "    this is not a key-value pair\n"
+                "    owner: appsec\n"
+                "    reason: Runtime secrets\n"
+            )
+
+    def test_live_policy_has_complete_exclusions(self):
+        exclusions, _ = check_scope.load_policy()
+        self.assertTrue(exclusions)
+        for rule in exclusions:
+            self.assertTrue(rule["pattern"].strip())
+            self.assertTrue(rule["owner"].strip())
+            self.assertTrue(rule["reason"].strip())
+
 
 class TestPolicyProcess(unittest.TestCase):
     def run_with_policy(self, policy):
@@ -76,6 +119,7 @@ class TestPolicyProcess(unittest.TestCase):
     def test_cli_refuses_unknown_policy_section(self):
         proc = self.run_with_policy(
             'exclusions:\n  - pattern: "**/*.pem"\n'
+            "    owner: appsec\n    reason: private keys\n"
             'exclusion:\n  - pattern: "**/.env"\n'
         )
         self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -91,10 +135,21 @@ class TestPolicyProcess(unittest.TestCase):
         self.assertIn("entry 1", proc.stderr)
         self.assertIn("pattern", proc.stderr)
 
+    def test_cli_honours_tab_after_list_marker(self):
+        proc = self.run_with_policy(
+            'exclusions:\n  -\tpattern: "**/.env"\n'
+            "    owner: appsec\n"
+            "    reason: Runtime secrets\n"
+        )
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("REFUSED", proc.stderr)
+        self.assertIn("**/.env", proc.stderr)
+
     def test_cli_refuses_bare_list_entry_without_pattern(self):
         proc = self.run_with_policy(
             'exclusions:\n  - pattern: "**/*.pem"\n'
             "    owner: first\n"
+            "    reason: private keys\n"
             "  -\n"
             "    owner: second\n"
             "    reason: missing pattern\n"

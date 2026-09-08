@@ -8,7 +8,9 @@ is a defect of the same kind this whole workflow exists to catch.
 import csv
 import builtins
 import hashlib
+import io
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -326,6 +328,102 @@ class TestIndependenceControl(unittest.TestCase):
                 self.assertIn("SCHEMA ERROR", proc.stderr)
                 self.assertIn("verdict_digest", proc.stderr)
 
+    def assert_noncanonical_id_refused_after_backend(self, jsonschema_module):
+        for malformed_document in ("verdict", "challenge"):
+            with self.subTest(malformed_document=malformed_document), temp_tree({
+                "jsonschema.py": jsonschema_module,
+            }) as root:
+                verdict = make_verdict(severity="low", evidence_level="partial")
+                challenge = make_challenge(verdict=verdict)
+                if malformed_document == "verdict":
+                    verdict["finding_id"] += "\n"
+                else:
+                    challenge["finding_id"] += "\n"
+                (root / "verdict.json").write_text(
+                    json.dumps(verdict), encoding="utf-8"
+                )
+                (root / "challenge.json").write_text(
+                    json.dumps(challenge), encoding="utf-8"
+                )
+                log = root / "triage-log.csv"
+                sarif = root / "reviewed.sarif"
+                args = [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "record_verdict.py"),
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ]
+                if malformed_document == "challenge":
+                    args.extend([
+                        "--challenge", str(root / "challenge.json"),
+                        "--validator", "model-b",
+                    ])
+                env = dict(os.environ)
+                env["PYTHONPATH"] = str(root)
+                proc = subprocess.run(
+                    args, cwd=root, capture_output=True, text=True, env=env
+                )
+                self.assertFalse(log.exists(), "refusal must not create the log")
+                self.assertFalse(sarif.exists(), "refusal must not write SARIF")
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("canonical finding_id", proc.stderr)
+
+    def test_noncanonical_id_is_refused_after_available_jsonschema_backend(self):
+        self.assert_noncanonical_id_refused_after_backend(
+            "def validate(*, instance, schema):\n    pass\n"
+        )
+
+    def test_noncanonical_id_is_refused_after_forced_fallback_backend(self):
+        real_import = builtins.__import__
+
+        def import_without_jsonschema(name, *args, **kwargs):
+            if name == "jsonschema":
+                raise ImportError("forced unavailable by recorder test")
+            return real_import(name, *args, **kwargs)
+
+        for malformed_document in ("verdict", "challenge"):
+            with self.subTest(malformed_document=malformed_document), temp_tree({}) as root:
+                verdict = make_verdict(severity="low", evidence_level="partial")
+                challenge = make_challenge(verdict=verdict)
+                if malformed_document == "verdict":
+                    verdict["finding_id"] += "\n"
+                else:
+                    challenge["finding_id"] += "\n"
+                (root / "verdict.json").write_text(
+                    json.dumps(verdict), encoding="utf-8"
+                )
+                (root / "challenge.json").write_text(
+                    json.dumps(challenge), encoding="utf-8"
+                )
+                log = root / "triage-log.csv"
+                sarif = root / "reviewed.sarif"
+                argv = [
+                    "record_verdict.py",
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ]
+                if malformed_document == "challenge":
+                    argv.extend([
+                        "--challenge", str(root / "challenge.json"),
+                        "--validator", "model-b",
+                    ])
+                stderr = io.StringIO()
+                with mock.patch.dict(sys.modules) as modules:
+                    modules.pop("jsonschema", None)
+                    with mock.patch("builtins.__import__", side_effect=import_without_jsonschema), \
+                            mock.patch.object(record_verdict, "_fallback_validate"), \
+                            mock.patch.object(sys, "argv", argv), \
+                            mock.patch.object(sys, "stderr", stderr):
+                        returncode = record_verdict.main()
+                self.assertFalse(log.exists(), "refusal must not create the log")
+                self.assertFalse(sarif.exists(), "refusal must not write SARIF")
+                self.assertEqual(returncode, 1, stderr.getvalue())
+                self.assertIn("canonical finding_id", stderr.getvalue())
+
     def test_stale_challenge_refuses_without_creating_or_changing_artifacts(self):
         for existing in (False, True):
             with self.subTest(existing=existing), temp_tree({}) as root:
@@ -463,6 +561,26 @@ class TestIndependenceControl(unittest.TestCase):
             self.assertEqual(sarif.read_bytes(), before_sarif)
             self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("whitespace-only", proc.stderr)
+
+    def test_newline_in_notes_is_refused_without_writes(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--notes", "first line\nsecond line",
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ],
+                root,
+            )
+            self.assertFalse(log.exists(), "refusal must not create the log")
+            self.assertFalse(sarif.exists(), "refusal must not write SARIF")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("newline", proc.stderr)
 
     def test_empty_agent_is_refused_without_writes(self):
         with temp_tree({}) as root:
@@ -819,6 +937,22 @@ class TestLogCompatibility(unittest.TestCase):
             self.assertIn("row 2", str(caught.exception))
             self.assertIn("truncated", str(caught.exception))
 
+    def test_extra_cell_is_refused(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            with log.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(record_verdict.LOG_FIELDS)
+                valid = self.valid_row()
+                writer.writerow([
+                    *(valid.get(field, "") for field in record_verdict.LOG_FIELDS),
+                    "unexpected",
+                ])
+            with self.assertRaises(record_verdict.ValidationError) as caught:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("row 2", str(caught.exception))
+            self.assertIn("extra", str(caught.exception))
+
     def test_foreign_id_scheme_is_refused(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
@@ -1127,6 +1261,13 @@ class TestFallbackValidator(unittest.TestCase):
                 with self.subTest(finding_id=finding_id, schema_name=schema_name):
                     with self.assertRaises(record_verdict.ValidationError):
                         self.validate_without_jsonschema(document, schema_name)
+
+    def test_real_fallback_pattern_rejects_a_terminal_newline(self):
+        with self.assertRaises(record_verdict.ValidationError):
+            self.validate_without_jsonschema(
+                make_verdict(finding_id="F-000000000001\n"),
+                "verdict.schema.json",
+            )
 
 
 class TestSchemaDriftGuard(unittest.TestCase):

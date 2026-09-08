@@ -96,6 +96,32 @@ class TestLogContractProcess(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("whitespace-only", proc.stderr)
 
+    def test_unclosed_quote_cannot_swallow_the_next_audit_event(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [
+                row(finding_id="F-000000000001"),
+                row(finding_id="F-000000000002"),
+            ])
+            physical_lines = log.read_text(encoding="utf-8").splitlines(
+                keepends=True
+            )
+            physical_lines[1] = (
+                physical_lines[1].rstrip("\r\n") + '"unterminated\n'
+            )
+            log.write_text("".join(physical_lines), encoding="utf-8")
+
+            proc = self.run_metrics(log)
+            if proc.returncode == 0:
+                rendered = json.loads(proc.stdout)
+                self.assertEqual(
+                    rendered["total"],
+                    2,
+                    "the second physical audit event was swallowed into notes",
+                )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("row 2", proc.stderr)
+
 
 class TestRecordedOrder(unittest.TestCase):
     def record(self, root, verdict, supersede=False):

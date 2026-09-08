@@ -65,7 +65,34 @@ class TestChallengeOutputContainment(unittest.TestCase):
                         outside.exists(), "finding_id must not create a file outside --out"
                     )
                     self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
-                    self.assertIn("would write outside", proc.stderr)
+                    self.assertIn("canonical finding_id", proc.stderr)
+
+    def test_noncanonical_finding_id_is_refused_before_filename_use(self):
+        with temp_tree({}) as root:
+            verdict = root / "verdict.json"
+            verdict.write_text(
+                json.dumps({
+                    "finding_id": "F-000000000001\n",
+                    "verdict": "true_positive",
+                }),
+                encoding="utf-8",
+            )
+            output = root / "packets"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_packet.py"),
+                    "--challenge",
+                    "--verdict", str(verdict),
+                    "--out", str(output),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            self.assertFalse(output.exists(), "refusal must precede packet writes")
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("canonical finding_id", proc.stderr)
 
 
 class TestLoadSarif(unittest.TestCase):

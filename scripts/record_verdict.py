@@ -32,7 +32,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_packet import ID_SCHEME, verdict_digest  # noqa: E402
+from build_packet import (  # noqa: E402
+    ID_SCHEME,
+    is_canonical_finding_id,
+    verdict_digest,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = REPO_ROOT / "templates"
@@ -177,7 +181,7 @@ def _fallback_check_value(value, spec: dict, label: str) -> None:
             raise ValidationError(
                 f"{label} longer than {spec['maxLength']} chars"
             )
-        if "pattern" in spec and re.search(spec["pattern"], value) is None:
+        if "pattern" in spec and re.fullmatch(spec["pattern"], value) is None:
             raise ValidationError(
                 f"{label}={value!r} does not match {spec['pattern']!r}"
             )
@@ -291,6 +295,17 @@ def decide_state(verdict: dict, challenge: dict | None) -> tuple[str, str]:
 
 
 def append_log(row: dict, path: Path = LOG_PATH) -> None:
+    cells = {key: row.get(key, "") for key in LOG_FIELDS}
+    for key, value in cells.items():
+        if "\n" in str(value) or "\r" in str(value):
+            # Refuse a newline in any cell. csv writes it as a legal multi-line
+            # field, but the log's invariant is one row per physical line: it
+            # is what makes a truncated or swallowed row detectable at all. A
+            # note worth keeping is worth keeping on one line.
+            raise ValidationError(
+                f"log cell {key!r} contains a newline; each audit record must "
+                "occupy exactly one physical line"
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     # Key the header on content, not on existence. A file that exists but is
     # empty is not a log yet, and appending to it without a header would put a
@@ -301,7 +316,7 @@ def append_log(row: dict, path: Path = LOG_PATH) -> None:
         writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
         if not has_header:
             writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in LOG_FIELDS})
+        writer.writerow(cells)
 
 
 def check_log_compatible(path: Path, id_scheme: str) -> None:
@@ -337,9 +352,39 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
                 "before recording new verdicts."
             )
 
-        for line_number, row in enumerate(
-            csv.DictReader(fh, fieldnames=header), start=2
-        ):
+        records = []
+        previous_end = 1
+        dict_reader = csv.DictReader(fh, fieldnames=header)
+        for row in dict_reader:
+            line_number = previous_end + 1
+            physical_end = 1 + dict_reader.line_num
+            records.append((line_number, physical_end, row))
+            previous_end = physical_end
+
+        expected_records = sum(
+            bool(line.strip())
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ) - 1
+        if len(records) != expected_records:
+            line_number = next(
+                (
+                    start
+                    for start, physical_end, _ in records
+                    if physical_end > start
+                ),
+                2,
+            )
+            raise ValidationError(
+                f"{path} row {line_number} spans physical lines; read "
+                f"{len(records)} CSV record(s) from {expected_records} non-empty "
+                "physical data line(s)"
+            )
+
+        for line_number, _, row in records:
+            if None in row:
+                raise ValidationError(
+                    f"{path} row {line_number} has extra cells beyond the log header"
+                )
             if any(value is None for value in row.values()):
                 raise ValidationError(
                     f"{path} row {line_number} is truncated; every log column "
@@ -632,6 +677,22 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    documents = [("verdict", verdict)]
+    if challenge_supplied:
+        documents.append(("challenge", challenge))
+    for document_name, document in documents:
+        finding_id = document.get("finding_id") if isinstance(document, dict) else None
+        if not is_canonical_finding_id(finding_id):
+            print(
+                f"SCHEMA ERROR: {document_name} finding_id {finding_id!r} is not "
+                "a canonical finding_id.",
+                file=sys.stderr,
+            )
+            print("\nThe agent did not follow the output contract. Re-run the "
+                  "procedure; do not hand-edit the verdict to make it pass.",
+                  file=sys.stderr)
+            return 1
+
     problems = check_consistency(verdict)
     if problems:
         print("CONSISTENCY ERRORS:\n", file=sys.stderr)
@@ -708,8 +769,7 @@ def main() -> int:
         print(f"SARIF ERROR: {exc}", file=sys.stderr)
         return 1
 
-    append_log(
-        {
+    log_row = {
             "reviewed_at": verdict.get("reviewer", {}).get(
                 "reviewed_at", datetime.now(timezone.utc).isoformat()
             ),
@@ -736,9 +796,12 @@ def main() -> int:
             ),
             "supersedes": prior[-1].get("reviewed_at", "") if prior else "",
             "notes": args.notes,
-        },
-        args.log,
-    )
+        }
+    try:
+        append_log(log_row, args.log)
+    except ValidationError as exc:
+        print(f"LOG ERROR: {exc}", file=sys.stderr)
+        return 1
 
     results = merge_result(existing, build_result(verdict, challenge, state, rationale))
     args.sarif_out.parent.mkdir(parents=True, exist_ok=True)

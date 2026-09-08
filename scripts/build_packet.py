@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,10 +35,23 @@ from check_scope import (  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONTEXT_LINES = 40
 ID_SCHEME = "content-v1"
+FINDING_ID = re.compile(r"F-[0-9a-f]{12}")
 
 # Keys we trust first when a scanner emits several. Order is significance, not
 # preference for its own sake: these are the ones scanners document as stable.
 FINGERPRINT_PREFERENCE = ("primaryLocationLineHash", "semgrep.fingerprint")
+
+
+def is_canonical_finding_id(value: object) -> bool:
+    """Whether a value is exactly an id this tool can have produced.
+
+    fullmatch, not match with an anchored pattern: Python's `$` also
+    matches before a terminal newline, so "F-000000000001\n" satisfies
+    ^F-[0-9a-f]{12}$ and goes on to poison the log the recorder itself
+    writes. jsonschema applies `pattern` with re.search and inherits the
+    same `$`, so neither validation backend can carry this check.
+    """
+    return isinstance(value, str) and bool(FINDING_ID.fullmatch(value))
 
 
 def _digest(material: str) -> str:
@@ -443,6 +457,13 @@ def main() -> int:
             parser.error("--challenge requires --verdict")
         verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
         packet = build_challenge_packet(verdict)
+        if not is_canonical_finding_id(packet.get("finding_id")):
+            print(
+                f"REFUSED: {packet.get('finding_id')!r} is not a canonical "
+                "finding_id and cannot be used in a packet filename.",
+                file=sys.stderr,
+            )
+            return 2
         out_dir = args.out.resolve()
         path = (out_dir / f"{packet['finding_id']}-challenge.json").resolve()
         if out_dir not in path.parents:
@@ -558,6 +579,13 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    if not is_canonical_finding_id(packet.get("finding_id")):
+        print(
+            f"REFUSED: {packet.get('finding_id')!r} is not a canonical "
+            "finding_id and cannot be used in a packet filename.",
+            file=sys.stderr,
+        )
+        return 2
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{packet['finding_id']}.json"
     path.write_text(json.dumps(packet, indent=2), encoding="utf-8")

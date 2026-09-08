@@ -5489,37 +5489,40 @@ git commit -m "fix: resolve minor review findings"
 ---
 ### Task 24: Правки финального ревью ветки
 
-#### Controller execution contract
+#### Контракт исполнения контроллера
 
-- Preserve and commit the user's existing plan and spec edits. Steps 1–7 run
-  strictly in order, with behavior-level RED then minimal production GREEN in
-  Steps 1–6. Record exact commands, exit codes and material output in
+- Сохранить и закоммитить существующие пользовательские правки плана и спеки.
+  Шаги 1–7 выполнять строго по порядку: в шагах 1–6 сначала поведенческий RED,
+  затем минимальный производственный GREEN. Точные команды, коды возврата и
+  существенный вывод записать в
   `docs/superpowers/evidence/2026-09-01-red-tests.md`.
-- Files: `scripts/check_scope.py`, `scripts/check_template.py`,
+- Файлы: `scripts/check_scope.py`, `scripts/check_template.py`,
   `scripts/record_verdict.py`, `scripts/record_human_decision.py`,
   `scripts/metrics.py`, `scripts/build_packet.py`, `Makefile`,
-  `templates/challenge.schema.json`, `README.md`, the seven corresponding
-  test modules (`test_check_scope`, `test_check_template`, `test_record_verdict`,
+  `templates/challenge.schema.json`, `README.md`, семь соответствующих
+  тестовых модулей (`test_check_scope`, `test_check_template`, `test_record_verdict`,
   `test_human_decision`, `test_metrics`, `test_build_packet`, `test_makefile`),
-  this plan, the design spec, and the red-tests and plan-fixes evidence files.
-- Execute and restore five mutations one at a time: direct lexical CLI scope
-  call (both process refusals fail); old line-by-line placeholder search
-  (multiline process refusal fails); metrics ordering/last-event key restored
-  to `reviewed_at` (actual writer/SARIF disagrees with metrics); reverse
-  validator/challenge refusal removed (audit row is written); verdict-digest
-  equality refusal bypassed (stale challenge writes or changes artifacts).
-  Keep `re.DOTALL`: removing it is inert because `[^>]` already matches newlines.
-- Refusal tests check absent or unchanged artifacts inside their temporary
-  trees. The recorded-order integration compares real writer/SARIF and metrics
-  for the same event sequence.
-- Step 7 is last: write the depth-audit table for exactly its five controls to
-  the evidence file, and do not fix its findings. After the table, no further
-  product/test edits; only verification, diff inspection, and commit.
-- Before commit run `python3 -m unittest tests.test_check_scope
+  этот план, проектную спеку и файлы доказательств red-tests и plan-fixes.
+- Выполнить и восстановить по одной пять мутаций: прямой лексический вызов CLI
+  проверки области (оба процессных отказа краснеют); старый построчный поиск
+  плейсхолдеров (краснеет процессный отказ для многострочного плейсхолдера);
+  возврат ключа сортировки и последнего события метрик к `reviewed_at`
+  (реальный писатель и SARIF расходятся с метриками); снятие обратного отказа
+  validator/challenge (записывается строка аудита); обход проверки равенства
+  verdict-digest (устаревший челлендж записывает или меняет артефакты).
+  Сохранить `re.DOTALL`: его удаление ничего не меняет, потому что `[^>]` уже
+  совпадает с переводами строк.
+- Тесты отказа проверяют отсутствие или неизменность артефактов внутри времени
+  жизни временных деревьев. Интеграция порядка записи сравнивает реальные
+  писатель/SARIF и метрики для одной последовательности событий.
+- Шаг 7 последний: записать в файл доказательств таблицу глубины ровно для его
+  пяти контролей и не исправлять найденное. После таблицы не менять продукт и
+  тесты: только проверки, просмотр разницы и коммит.
+- Перед коммитом выполнить `python3 -m unittest tests.test_check_scope
   tests.test_check_template tests.test_record_verdict tests.test_human_decision
-  tests.test_metrics tests.test_build_packet tests.test_makefile -v`, then one
-  full `make test`, then `git diff --check`. No network or installations.
-- Stage every listed file that changed; commit once with
+  tests.test_metrics tests.test_build_packet tests.test_makefile -v`, затем один
+  полный `make test` и `git diff --check`. Без сети и установок.
+- Добавить в индекс каждый изменённый файл из списка; создать один коммит
   `git commit -m "fix: close final review control gaps"`.
 
 Все пять проверены исполнением. Пункты 3 и 5 меняли замысел, решения приняты и
@@ -5691,13 +5694,13 @@ def verdict_digest(verdict: dict) -> str:
 
 ### Task 25: Правки второго финального ревью
 
-Step 7 из Task 24 отработал: пять новых дефектов, все — в тех пяти контролях,
+Шаг 7 задачи 24 отработал: пять новых дефектов, все — в тех пяти контролях,
 которые он предписывал перечитать. Все проверены исполнением.
 
-**Execution contract.** Work from base
-`231505c3370a80eaa95f12a50681a3b58e6099c1` on `hardening/2026-09` without
-switching branches or modifying the spec. Preserve the user's uncommitted Task
-25 plan. The exact tracked file surface is:
+**Контракт исполнения.** Работать от
+`231505c3370a80eaa95f12a50681a3b58e6099c1` в `hardening/2026-09`, не
+переключая ветку и не меняя спеку. Сохранить незакоммиченный пользовательский
+план задачи 25. Точная область отслеживаемых файлов:
 
 - `scripts/check_scope.py`
 - `scripts/record_verdict.py`
@@ -5715,21 +5718,23 @@ switching branches or modifying the spec. Preserve the user's uncommitted Task
 - `docs/superpowers/evidence/2026-09-01-red-tests.md`
 - `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
 
-Steps 1–5 each require tests and an observed causal RED before the minimum
-production change, followed by focused GREEN. Apply each prescribed mutation
-separately with `apply_patch`, retain its actual failing command and output,
-restore it with `apply_patch`, and prove restored GREEN before the next step.
-Force `jsonschema` unavailable in fallback tests. Step 3's malformed
-`recorded_at` mutation must reach wrong event ordering, and every no-write
-assertion must execute inside its temporary tree. Make no network calls and
-install nothing.
+В каждом из шагов 1–5 сначала добавить тесты и наблюдать причинный RED, затем
+внести минимальную производственную правку и получить сфокусированный GREEN.
+Каждую предписанную мутацию применять отдельно через `apply_patch`, сохранять
+фактическую падающую команду и вывод, восстанавливать через `apply_patch` и до
+следующего шага подтверждать восстановленный GREEN. В тестах резервного пути
+принудительно делать `jsonschema` недоступным. Мутация испорченного
+`recorded_at` на шаге 3 должна доходить до неверного порядка событий, а каждая
+проверка отсутствия записи должна выполняться внутри времени жизни временного
+дерева. Не обращаться к сети и ничего не устанавливать.
 
-After Step 6, run focused verification, one final `make test`, `make
-check-scope`, `make list SARIF=tests/fixtures/sample.sarif`, `make metrics`, the
-expected-failing `make check-template`, and `git diff --check`. Backfill Task
-24's GREEN commit `231505c3370a80eaa95f12a50681a3b58e6099c1` in
-`red-tests.md`. Stage exactly the files above, verify the staged set, and make
-one commit with subject `fix: close second-review control gaps`.
+После шага 6 выполнить сфокусированные проверки, один финальный `make test`,
+`make check-scope`, `make list SARIF=tests/fixtures/sample.sarif`, `make
+metrics`, ожидаемо падающий `make check-template` и `git diff --check`. Вписать
+GREEN-коммит задачи 24 `231505c3370a80eaa95f12a50681a3b58e6099c1` в
+`red-tests.md`. Добавить в индекс ровно перечисленные выше файлы, проверить
+набор в индексе и создать один коммит с темой
+`fix: close second-review control gaps`.
 
 - [x] **Step 1: Испорченная политика отключает область молча**
 
@@ -5919,7 +5924,177 @@ non-zero, ни лога, ни SARIF. Проверки отсутствия вн�
 
 ---
 
-## Definition of Done
+### Task 26: Правки третьего финального ревью
+
+Три Important, все проверены исполнением. Первые две — сужающиеся формы уже
+закрытых классов, третья нова по виду и касается целостности журнала.
+
+**Контракт исполнения.** Работать от
+`6b4284310cba56a6df0fd2ec582b7d779da879e3` в `hardening/2026-09`, не
+переключая ветку, не меняя спеку и сохраняя незакоммиченные правки плана и
+брифа. Точная область отслеживаемых файлов:
+
+- `scripts/check_scope.py`
+- `scripts/build_packet.py`
+- `scripts/record_verdict.py`
+- `scripts/check_template.py`
+- `templates/verdict.schema.json`
+- `templates/challenge.schema.json`
+- `tests/test_check_scope.py`
+- `tests/test_build_packet.py`
+- `tests/test_record_verdict.py`
+- `tests/test_metrics.py`
+- `tests/test_check_template.py`
+- `README.md`
+- `docs/03-data-handling.md`
+- `docs/superpowers/plans/2026-09-01-codex-brief.md`
+- `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`
+- `docs/superpowers/evidence/2026-09-01-red-tests.md`
+- `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+
+Шаги 1–3 выполнять через RED/GREEN по одному: сначала регрессия, падающая на
+названном дефекте, затем минимальная правка и сфокусированный зелёный прогон.
+Каждую из трёх предписанных мутаций применять отдельно через `apply_patch`,
+сохранять фактическую команду и вывод, восстанавливать через `apply_patch` и
+подтверждать восстановленный GREEN до следующего шага. Для шага 2 отдельными
+тестовыми ветками выполнить рекордер при доступном `jsonschema` и при
+принудительном `ImportError`; зависимость не устанавливать и в сеть не выходить.
+Отказ до записи проверять внутри времени жизни временного дерева.
+
+После шага 4 прогнать сфокусированные тесты, один свежий `make test`, `make
+check-scope`, `make list SARIF=tests/fixtures/sample.sarif`, `make metrics`,
+ожидаемо падающий `make check-template` и `git diff --check`. Проверить точный
+набор в индексе и создать основной коммит `fix: close third-review control gaps`.
+Точный хеш коммита не может ссылаться на себя из собственного содержимого,
+поэтому после основного коммита вписать его хеш в доказательства задачи 26,
+довести весь файл доказательств до самостоятельного формата «дефект — мутация
+или честно названный исторический класс — GREEN-коммит» и создать отдельный
+документационный коммит `docs: finalize hardening evidence`. Оба коммита входят
+в единый пакет ревью задачи 26.
+
+- [x] **Шаг 1: Всё, что парсер политики не смог объяснить, — отказ**
+
+Задача 25 закрыла именованные формы порчи. Остались другие: маркер списка через
+табуляцию, шаблон из одних пробелов в кавычках, нераспознанные формы записи.
+Каждая убирает исключение, оставляя файл внешне рабочим, — и `.env` снова
+проходит с нулевым кодом.
+
+Точечные отказы за каждой формой порчи не угнаться. Принцип обобщается со
+секций на строки: **строка внутри `exclusions`, которую парсер не смог отнести
+ни к началу записи, ни к продолжению `ключ: значение`, — отказ с её номером.**
+
+- маркером списка считать `-` с любым пробельным символом после, не только `- `;
+- `pattern` после снятия кавычек и пробелов не может быть пустым;
+- запись обязана нести `pattern`, `owner` и `reason` — `docs/03` уже требует,
+  чтобы каждое исключение было владельческим и объяснённым, теперь это
+  обеспечено, а не продекларировано;
+- всё прочее внутри секции — отказ.
+
+Тесты: по одному на каждую форму, включая табуляцию и пробельный шаблон, плюс
+боевая политика по-прежнему разбирается. Мутационная проверка: вернуть тихое
+игнорирование нераспознанной строки, убедиться что тест с табуляцией краснеет.
+
+- [x] **Шаг 2: `$` пропускает хвостовой перевод строки**
+
+Проверено: `re.match(r'^F-[0-9a-f]{12}$', 'F-000000000001\n')` истинно,
+`re.fullmatch(r'F-[0-9a-f]{12}', ...)` — ложно. Идентификатор с хвостовым
+переводом строки проходит канонический шаблон, доходит до обеих записей, и потом
+`check_log_compatible` отвергает собственноручно записанную строку. Рекордер
+отравляет свой же журнал.
+
+Схема тут не спасает и не может: `jsonschema` применяет `pattern` через
+`re.search`, и у Python `$` перед завершающим `\n` совпадает.
+
+**Первая редакция этого шага была неполной.** Она предписывала проверку в
+`_fallback_validate`, а он вызывается только при `ImportError`. На машине с
+установленным `jsonschema` — то есть на рекомендованной конфигурации — проверка
+не выполнялась бы вовсе, и идентификатор с `\n` доходил бы до `append_log`.
+Починена была одна ветка развилки.
+
+Поэтому проверка не принадлежит ни одному из бэкендов валидации, а стоит **после
+любого из них и до любой записи**.
+
+Канон определяется там же, где порождается, — в `build_packet`, рядом с
+`_digest`:
+
+    FINDING_ID = re.compile(r"F-[0-9a-f]{12}")
+
+    def is_canonical_finding_id(value: object) -> bool:
+        """Whether a value is exactly an id this tool can have produced.
+
+        fullmatch, not match with an anchored pattern: Python's `$` also
+        matches before a terminal newline, so "F-000000000001\n" satisfies
+        ^F-[0-9a-f]{12}$ and goes on to poison the log the recorder itself
+        writes. jsonschema applies `pattern` with re.search and inherits the
+        same `$`, so neither validation backend can carry this check.
+        """
+        return isinstance(value, str) and bool(FINDING_ID.fullmatch(value))
+
+Применяется в трёх местах, каждое — самостоятельная точка отказа:
+
+- `record_verdict`: после `validate()` и до всякой записи — для вердикта и, если
+  передан, для челленджа. Импорт из `build_packet`, как `ID_SCHEME`;
+- `build_packet`: перед использованием идентификатора в имени файла;
+- `_fallback_validate`: ключ `pattern` вообще проверять через `re.fullmatch` —
+  это чинит и остальные шаблоны схемы, не только идентификатор.
+
+В описании поля в обеих схемах отметить, что обеспечение — fullmatch, а `pattern`
+в схеме носит документирующий характер.
+
+Тесты: идентификатор с `\n` отвергается рекордером до записи, отвергается
+построителем пакета, и отвергается фолбэком. **Рекордерный тест гонять и с
+установленным `jsonschema`, и без него** — именно разница между этими двумя
+прогонами и была дырой. Мутационная проверка: заменить `fullmatch` на `match`,
+убедиться что краснеет рекордерный тест, а не только фолбэковый.
+
+- [x] **Шаг 3: Одна строка журнала — одна физическая строка**
+
+Проверено: незакрытая кавычка в `notes` поглощает следующую строку целиком.
+`csv.DictReader` отдаёт одну запись вместо двух, поглощённое событие живёт внутри
+поля `notes`, валидация проходит, метрики показывают одну находку вместо двух.
+Событие аудита исчезает бесследно — в журнале только с добавлением это худший
+из возможных исходов. Лишние ячейки тоже принимаются: они попадают под ключ
+`None`.
+
+Инвариант формулируется явно и обеспечивается с обеих сторон: **в журнале одна
+запись занимает ровно одну физическую строку.**
+
+Со стороны записи — ни `\n`, ни `\r` ни в одном значении:
+
+    Refuse a newline in any cell. csv writes it as a legal multi-line field,
+    but the log's invariant is one row per physical line: it is what makes a
+    truncated or swallowed row detectable at all. A note worth keeping is
+    worth keeping on one line.
+
+Со стороны чтения, внутри `check_log_compatible`:
+
+- число прочитанных записей равно числу непустых строк файла минус заголовок;
+- ключ `None` в записи — лишние ячейки, отказ;
+- значение `None` — обрезанная строка, отказ (уже есть).
+
+Первая проверка ловит именно поглощение: съеденная строка уменьшает счётчик
+записей, не меняя счётчика строк.
+
+Тесты: незакрытая кавычка — отказ с номером строки; лишняя ячейка — отказ;
+попытка записать `--notes` с переводом строки — отказ до всякой записи.
+Мутационная проверка: снять сверку счётчиков, убедиться что тест с поглощением
+краснеет на числе находок, а не на чём-то попутном.
+
+- [x] **Шаг 4: Мелкие**
+
+- Формулировка вокруг `make check-template` всё ещё обещает больше, чем шлюз
+  делает. Привести в соответствие с ограничением, записанным в шаге 6 задачи 25:
+  проверяется отсутствие плейсхолдеров, а не осмысленность содержимого.
+- Убрать английские вставки исполнения из русского текста плана.
+- Оставшиеся исторические записи доказательств пометить их классом, как это
+  уже сделано для задач 11 и 19.
+- Каждая запись в `red-tests.md` должна читаться без переписки: явно называть
+  дефект, мутацию (либо честный исторический класс, если отдельной мутации не
+  было) и точный коммит, где проверка стала зелёной.
+
+---
+
+## Критерии готовности
 
 - `make test` зелёный на голом Python 3.9+ без единой установки.
 - У каждого дефекта из слоёв 1–3 и §5.3 сохранён вывод падавшего теста.

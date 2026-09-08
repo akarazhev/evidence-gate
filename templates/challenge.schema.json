@@ -23,6 +23,7 @@
     },
     "finding_id": {
       "type": "string",
+      "description": "Stable identifier copied from the verdict. The recorder enforces this with fullmatch; the schema pattern is documentary.",
       "minLength": 1,
       "pattern": "^F-[0-9a-f]{12}$"
     },
