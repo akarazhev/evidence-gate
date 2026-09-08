@@ -35,6 +35,12 @@ class TestFindPlaceholders(unittest.TestCase):
     def test_filled_file_has_none(self):
         self.assertEqual(check_template.find_placeholders(FILLED), [])
 
+    def test_multiline_placeholders_report_start_line_and_first_line(self):
+        self.assertEqual(
+            check_template.find_placeholders("# Context\n<HTTP handlers,\n queues> and <Auth>\n"),
+            [(2, "<HTTP handlers,"), (3, "<Auth>")],
+        )
+
     def test_prose_angle_brackets_do_not_count(self):
         # "less than" in prose must not be mistaken for a placeholder.
         self.assertEqual(check_template.find_placeholders("if a < b and c > d\n"), [])
@@ -59,6 +65,12 @@ class TestProcess(unittest.TestCase):
             proc = self.run_check(root / "CLAUDE.md")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("no unfilled placeholders", proc.stdout)
+
+    def test_multiline_placeholder_is_refused(self):
+        with temp_tree({"CLAUDE.md": "# Context\n<HTTP handlers,\n queue consumers>\n"}) as root:
+            proc = self.run_check(root / "CLAUDE.md")
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("2  <HTTP handlers,", proc.stderr)
 
     def test_missing_file_is_refused_not_reported_clean(self):
         # The shell version printed "no unfilled placeholders" and exited 0

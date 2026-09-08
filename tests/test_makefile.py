@@ -58,6 +58,30 @@ class TestInstall(unittest.TestCase):
         self.assertEqual(pip_args, ["install", "semgrep==1.2.3"])
 
 
+class TestRecordTarget(unittest.TestCase):
+    def test_validator_is_forwarded_only_with_an_existing_challenge(self):
+        recorder = "import json, sys\nfrom pathlib import Path\nPath('argv.json').write_text(json.dumps(sys.argv[1:]))\n"
+        for challenged in (False, True):
+            with self.subTest(challenged=challenged), temp_tree({
+                "scripts/record_verdict.py": recorder,
+            }) as root:
+                if challenged:
+                    challenge = root / "findings/challenges/F-known.json"
+                    challenge.parent.mkdir(parents=True)
+                    challenge.write_text("{}", encoding="utf-8")
+                proc = subprocess.run([
+                    "make", "-f", str(MAKEFILE), "record", "ID=F-known",
+                    "AGENT=model-a", "VALIDATOR=model-b",
+                ], cwd=root, capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                args = json.loads((root / "argv.json").read_text())
+                expected = ["--verdict", "findings/verdicts/F-known.json", "--agent", "model-a"]
+                if challenged:
+                    expected += ["--challenge", "findings/challenges/F-known.json", "--validator", "model-b"]
+                self.assertEqual(dict(zip(args[::2], args[1::2])),
+                                 dict(zip(expected[::2], expected[1::2])))
+
+
 class TestQueueTargets(unittest.TestCase):
     def run_make(self, root, target, *variables):
         return subprocess.run(

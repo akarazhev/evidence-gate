@@ -537,3 +537,55 @@
 - Why: This is an unambiguous local completeness correction. It preserves all
   established validation, scope, identity, queue, egress, audit, and metrics
   semantics while making the five final-review corrections auditable.
+
+## Task 24 execution contract, files, and preserved user decisions
+
+- Before: the user's Task 24 specified the behavior and final audit, but not
+  its complete file surface, evidence commands, restoration procedure, or
+  one-commit contract. The revised spec already authorizes recording-time
+  ordering and digest-bound challenges; those decisions are preserved.
+- After: the controller brief is reflected in Task 24's execution contract:
+  all named production/test/docs files, sequential Steps 1–7, behavior-level
+  RED/GREEN, exact evidence, final focused command, one full `make test`, diff
+  review, explicit staging, and `fix: close final review control gaps`.
+- Why: this is a local execution-contract correction. No compatibility path
+  is added for the authorized breaking changes; old headers fail closed and
+  old challenges must be rebuilt, as documented in README.
+
+## Task 24 meaningful mutations and no-write evidence
+
+- Before: Step 2 requested removing `re.DOTALL`, which cannot detect the bug:
+  `[^>]` already matches newlines. Other steps lacked precise mutation and
+  restoration criteria or artifact-lifetime requirements.
+- After: Step 2 explicitly restores the old line-by-line search while keeping
+  `re.DOTALL`. The task names all five mutations, requires isolated execution
+  and restored GREEN after each, and requires refusal assertions inside the
+  temporary tree. The recorded-order integration compares real writer/SARIF
+  output and metrics from the same event sequence.
+- Why: the controller requires causal defect evidence, including actual
+  audit writes for the reverse-validator and stale-challenge mutations.
+
+## Task 24 final depth-audit boundary
+
+- Before: Step 7 asked for the five-control written audit without stating the
+  post-audit implementation boundary in the execution contract.
+- After: the table must answer consumer reliance and validation depth for
+  exactly `check_scope`, `check_log_compatible`, `check_template`,
+  `_fallback_validate`, and independence refusal. Step 7 is last; its findings
+  are documented without fixes, and no product/test files change afterward.
+- Why: the controller explicitly separates this review deliverable from any
+  further product work. Final checks and the single commit follow the audit.
+
+## Task 24 implementation-level evidence clarifications
+
+- Step 3's timestamp fixtures now use `recorded_at` for ordering and retain
+  a separate self-reported `reviewed_at`; existing invalid/offset/tie cases
+  retain their original purpose. The legacy `supersedes` value is descriptive
+  only, and no metric control uses it or `reviewed_at`.
+- Step 4's Makefile test compares forwarded option/value mappings; incidental
+  argument order is not part of the public contract.
+- Step 5 uses packet/schema RED/GREEN before the stale-revision RED/GREEN,
+  so the stale process regression reaches the actual writer rather than
+  failing prematurely on the old schema's additional-property rejection.
+- Step 6 backfills both original and review-follow-up GREEN commits for
+  Tasks 21 and 22 from the actual local branch history.

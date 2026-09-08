@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_packet import ID_SCHEME  # noqa: E402
+from build_packet import ID_SCHEME, verdict_digest  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = REPO_ROOT / "templates"
@@ -39,7 +39,7 @@ LOG_PATH = REPO_ROOT / "findings" / "triage-log.csv"
 SARIF_OUT = REPO_ROOT / "findings" / "reviewed.sarif"
 
 LOG_FIELDS = [
-    "reviewed_at", "finding_id", "id_scheme", "rule_id", "file", "line",
+    "reviewed_at", "recorded_at", "finding_id", "id_scheme", "rule_id", "file", "line",
     "severity", "priority_class", "evidence_level", "confidence",
     "initial_verdict", "challenge_result", "final_state",
     "minutes_spent", "requires_runtime_proof",
@@ -503,6 +503,12 @@ def main() -> int:
     if args.challenge and not args.validator:
         parser.error("--validator is required when --challenge is given")
 
+    if args.validator and args.challenge is None:
+        parser.error(
+            "--validator without --challenge would record a validator that "
+            "validated nothing"
+        )
+
     if args.validator and args.agent == args.validator:
         print("REFUSED: triage and validation ran on the same model.\n", file=sys.stderr)
         print(f"  agent:     {args.agent}", file=sys.stderr)
@@ -556,6 +562,19 @@ def main() -> int:
     if challenge and challenge.get("finding_id") != verdict["finding_id"]:
         print("ERROR: challenge finding_id does not match the verdict.", file=sys.stderr)
         return 1
+
+    if challenge_supplied:
+        expected = verdict_digest(verdict)
+        supplied = challenge.get("verdict_digest")
+        if supplied != expected:
+            print(f"REFUSED: challenge was built for a different verdict.\n",
+                  file=sys.stderr)
+            print(f"  challenge carries: {supplied}", file=sys.stderr)
+            print(f"  this verdict is:   {expected}\n", file=sys.stderr)
+            print("A challenge refutes one revision, not a finding. Re-run the "
+                  "validation pass against the verdict you are recording.",
+                  file=sys.stderr)
+            return 2
 
     prior = verdict_rows(args.log, verdict["finding_id"])
     if prior and not args.supersede:
@@ -612,6 +631,7 @@ def main() -> int:
             "reviewed_at": verdict.get("reviewer", {}).get(
                 "reviewed_at", datetime.now(timezone.utc).isoformat()
             ),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
             "finding_id": verdict["finding_id"],
             "id_scheme": ID_SCHEME,
             "rule_id": verdict.get("rule_id", ""),

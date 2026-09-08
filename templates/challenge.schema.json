@@ -6,6 +6,7 @@
   "type": "object",
   "required": [
     "finding_id",
+    "verdict_digest",
     "challenge_result",
     "refutation_attempts",
     "reasoning",
@@ -13,6 +14,13 @@
   ],
   "additionalProperties": false,
   "properties": {
+    "verdict_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "Copy verbatim from the challenge packet; binds this challenge to the exact verdict revision."
+    },
     "finding_id": {
       "type": "string",
       "minLength": 1

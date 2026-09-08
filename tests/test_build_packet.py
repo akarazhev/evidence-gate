@@ -20,6 +20,19 @@ from tests.helpers import FIXTURES, fixture_exclusions, temp_tree
 SARIF = FIXTURES / "sample.sarif"
 
 
+class TestChallengeRevisionPacket(unittest.TestCase):
+    def test_packet_binds_the_canonical_verdict_and_tells_validator_to_copy_digest(self):
+        verdict = {"finding_id": "F-test", "verdict": "true_positive"}
+        packet = build_packet.build_challenge_packet(verdict)
+        self.assertEqual(packet.get("verdict_digest"), "af3811fd881463e4")
+        reordered = build_packet.build_challenge_packet(dict(reversed(list(verdict.items()))))
+        self.assertEqual(packet["verdict_digest"], reordered["verdict_digest"])
+        revised = build_packet.build_challenge_packet({**verdict, "verdict": "false_positive"})
+        self.assertNotEqual(packet["verdict_digest"], revised["verdict_digest"])
+        self.assertIn("verdict_digest", packet["instructions"])
+        self.assertIn("verbatim", packet["instructions"])
+
+
 class TestLoadSarif(unittest.TestCase):
     def setUp(self):
         self.results = build_packet.load_sarif_results(SARIF)
@@ -66,6 +79,32 @@ class TestResolvedScopeControl(unittest.TestCase):
     def setUp(self):
         self.result = build_packet.load_sarif_results(SARIF)[0]
         self.result.update(start_line=1, end_line=1)
+
+    def test_annotation_refuses_excluded_and_outside_links_even_with_fingerprints(self):
+        for fingerprint in ({}, {"semgrep.fingerprint": "fixture-target"}):
+            for destination in ("../secrets/token.txt", "../../outside.txt"):
+                with self.subTest(fingerprint=fingerprint, destination=destination), temp_tree({
+                    "repo/app/safe.py": "safe()\n", "repo/secrets/token.txt": "secret\n",
+                    "outside.txt": "outside\n",
+                }) as root:
+                    repo = root / "repo"
+                    (repo / "app/handler.py").symlink_to(destination)
+                    result = {**self.result, "partialFingerprints": fingerprint}
+                    item = build_packet.annotate([result], repo, fixture_exclusions())[0]
+                    self.assertFalse(item["in_scope"], "scope label must describe the resolved target")
+                    self.assertIsNone(item["finding_id"], "excluded aliases must not acquire usable identities")
+
+    def test_list_json_marks_excluded_symlink_out_of_scope_without_an_id(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "secret\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+            proc = subprocess.run([
+                sys.executable, str(REPO_ROOT / "scripts/build_packet.py"),
+                "--sarif", str(SARIF), "--repo", str(repo), "--list", "--json",
+            ], cwd=repo, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            item = next(item for item in json.loads(proc.stdout) if item["file"] == "app/handler.py")
+            self.assertFalse(item["in_scope"])
+            self.assertIsNone(item["finding_id"])
 
     def test_content_identity_refuses_an_excluded_symlink(self):
         with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "TOP-SECRET\n"}) as repo:

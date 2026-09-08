@@ -125,6 +125,15 @@ Documentation files follow an internal series, so the numbering has gaps.
 
 ## Known limitations
 
+- Breaking audit-log change: `recorded_at` now follows `reviewed_at` in the
+  CSV header. Writer-stamped UTC recording time controls revision ordering,
+  decision supersession and `--since`; the model's `reviewed_at` is retained
+  as self-reported history. Recorders refuse older headers. Archive the old
+  `findings/` directory or retriage before recording with the new contract.
+- Breaking challenge-schema change: every challenge must carry the exact
+  16-hex `verdict_digest` from its challenge packet. Old challenges without
+  the field are refused; a challenge for another revision is refused before
+  writing. Rebuild the packet and rerun validation whenever the verdict changes.
 - `findings/reviewed.sarif` accumulates and is never pruned. Over a long
   programme it grows without bound; rotate it yourself if that becomes a
   problem.

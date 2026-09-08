@@ -4,9 +4,12 @@ check_scope is the only component in this repository whose refusal is a
 security control rather than a convenience, so it is tested first and hardest.
 """
 
+import subprocess
+import sys
 import unittest
 
 import check_scope
+from tests import REPO_ROOT
 from tests.helpers import FIXTURES, fixture_exclusions, temp_tree
 
 
@@ -97,6 +100,36 @@ class TestMatches(unittest.TestCase):
 
     def test_mixed_case_extension_is_refused(self):
         self.assertRefused("certs/Server.PEM")
+
+
+class TestScopeProcess(unittest.TestCase):
+    def run_check(self, repo, path, explicit_repo=False):
+        command = [sys.executable, str(REPO_ROOT / "scripts/check_scope.py")]
+        if explicit_repo:
+            command += ["--repo", str(repo)]
+        return subprocess.run(command + [str(path)], cwd=repo,
+                              capture_output=True, text=True)
+
+    def test_cli_refuses_symlink_to_excluded_file(self):
+        with temp_tree({"app/safe.py": "safe()\n", "secrets/token.txt": "secret\n"}) as repo:
+            (repo / "app/handler.py").symlink_to("../secrets/token.txt")
+            proc = self.run_check(repo, "app/handler.py")
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("secrets/", proc.stderr)
+
+    def test_cli_refuses_absolute_path_outside_repository(self):
+        with temp_tree({"repo/safe.py": "safe()\n", "outside.txt": "outside\n"}) as root:
+            proc = self.run_check(root / "repo", root / "outside.txt")
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("outside repository", proc.stderr)
+
+    def test_cli_accepts_regular_file_with_default_and_explicit_repo(self):
+        with temp_tree({"app/safe.py": "safe()\n"}) as repo:
+            for explicit_repo in (False, True):
+                with self.subTest(explicit_repo=explicit_repo):
+                    proc = self.run_check(repo, "app/safe.py", explicit_repo)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertIn("OK", proc.stdout)
 
 
 class TestResolveWithin(unittest.TestCase):

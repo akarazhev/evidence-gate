@@ -67,8 +67,7 @@ record:
 	@python3 scripts/record_verdict.py \
 		--verdict findings/verdicts/$(ID).json \
 		--agent "$(AGENT)" \
-		$(if $(VALIDATOR),--validator "$(VALIDATOR)",) \
-		$(if $(wildcard findings/challenges/$(ID).json),--challenge findings/challenges/$(ID).json,) \
+		$(if $(wildcard findings/challenges/$(ID).json),--challenge findings/challenges/$(ID).json $(if $(VALIDATOR),--validator "$(VALIDATOR)",),) \
 		$(if $(MINUTES),--minutes $(MINUTES),)
 
 decide:

@@ -11,8 +11,10 @@ import json
 import subprocess
 import sys
 import unittest
+from datetime import datetime, timezone
 
 import record_verdict
+import build_packet
 from tests import REPO_ROOT
 from tests.helpers import temp_tree, write_log
 
@@ -34,9 +36,13 @@ def make_verdict(**overrides) -> dict:
     return verdict
 
 
-def make_challenge(result: str = "upheld", **overrides) -> dict:
+def make_challenge(result: str = "upheld", verdict=None, **overrides) -> dict:
     challenge = {
         "finding_id": "F-000000000001",
+        "verdict_digest": hashlib.sha256(json.dumps(
+            verdict if verdict is not None else make_verdict(),
+            sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()[:16],
         "challenge_result": result,
         "refutation_attempts": [
             {"claim": "input is attacker controlled", "result": "held"}
@@ -257,9 +263,107 @@ class TestIndependenceControl(unittest.TestCase):
 
     def setup_files(self, root):
         verdict = make_verdict(severity="low", evidence_level="partial")
-        challenge = make_challenge("upheld")
+        challenge = make_challenge("upheld", verdict=verdict)
         (root / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
         (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
+
+    def test_recorder_stamps_recorded_at_and_preserves_model_reviewed_at(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            before = datetime.now(timezone.utc)
+            proc = self.run_recorder([
+                "--verdict", str(root / "verdict.json"), "--agent", "model-a",
+                "--log", str(root / "triage-log.csv"), "--sarif-out", str(root / "reviewed.sarif"),
+            ], root)
+            after = datetime.now(timezone.utc)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with (root / "triage-log.csv").open() as fh:
+                recorded = list(csv.DictReader(fh))[0]
+            self.assertTrue(recorded.get("recorded_at"), "writer must stamp its own event time")
+            moment = datetime.fromisoformat(recorded["recorded_at"])
+            self.assertEqual(moment.utcoffset().total_seconds(), 0)
+            self.assertLessEqual(before, moment)
+            self.assertLessEqual(moment, after)
+            self.assertEqual(recorded["reviewed_at"], "2026-09-01T10:00:00+00:00")
+
+    def test_validator_without_challenge_is_refused_without_writes(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log, sarif = root / "triage-log.csv", root / "reviewed.sarif"
+            proc = self.run_recorder([
+                "--verdict", str(root / "verdict.json"), "--agent", "model-a",
+                "--validator", "model-b", "--log", str(log), "--sarif-out", str(sarif),
+            ], root)
+            self.assertFalse(log.exists(), "validator without a challenge must not create an audit row")
+            self.assertFalse(sarif.exists(), "refusal must not write SARIF")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("--validator without --challenge", proc.stderr)
+
+    def test_missing_verdict_digest_is_schema_refused_without_writes(self):
+        for python_args in ([], ["-S"]):
+            with self.subTest(python_args=python_args), temp_tree({}) as root:
+                self.setup_files(root)
+                challenge = make_challenge()
+                challenge.pop("verdict_digest", None)
+                (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
+                log, sarif = root / "triage-log.csv", root / "reviewed.sarif"
+                proc = subprocess.run([
+                    sys.executable, *python_args, str(REPO_ROOT / "scripts/record_verdict.py"),
+                    "--verdict", str(root / "verdict.json"), "--challenge", str(root / "challenge.json"),
+                    "--agent", "model-a", "--validator", "model-b", "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ], cwd=root, capture_output=True, text=True)
+                self.assertFalse(log.exists(), "missing digest must not write the log")
+                self.assertFalse(sarif.exists(), "missing digest must not write SARIF")
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("SCHEMA ERROR", proc.stderr)
+                self.assertIn("verdict_digest", proc.stderr)
+
+    def test_stale_challenge_refuses_without_creating_or_changing_artifacts(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), temp_tree({}) as root:
+                self.setup_files(root)
+                log, sarif = root / "triage-log.csv", root / "reviewed.sarif"
+                args = [
+                    "--verdict", str(root / "verdict.json"), "--challenge", str(root / "challenge.json"),
+                    "--agent", "model-a", "--validator", "model-b", "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ]
+                if existing:
+                    first = self.run_recorder(args, root)
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                before = tuple(path.read_bytes() if path.exists() else None for path in (log, sarif))
+                revised = make_verdict(severity="low", verdict="false_positive")
+                (root / "verdict.json").write_text(json.dumps(revised), encoding="utf-8")
+                proc = self.run_recorder(args + (["--supersede"] if existing else []), root)
+                after = tuple(path.read_bytes() if path.exists() else None for path in (log, sarif))
+                self.assertEqual(after, before, "stale challenge must preserve absent/existing log and SARIF")
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertIn("different verdict", proc.stderr)
+
+    def test_challenge_from_current_revision_packet_is_accepted(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            args = [
+                "--verdict", str(root / "verdict.json"), "--challenge", str(root / "challenge.json"),
+                "--agent", "model-a", "--validator", "model-b", "--log", str(root / "triage-log.csv"),
+                "--sarif-out", str(root / "reviewed.sarif"),
+            ]
+            first = self.run_recorder(args, root)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            revised = make_verdict(severity="low", verdict="false_positive")
+            packet = build_packet.build_challenge_packet(revised)
+            challenge = make_challenge(verdict_digest=packet["verdict_digest"])
+            (root / "verdict.json").write_text(json.dumps(revised), encoding="utf-8")
+            (root / "challenge.json").write_text(json.dumps(challenge), encoding="utf-8")
+            proc = self.run_recorder(args + ["--supersede"], root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            result = record_verdict.load_existing_results(root / "reviewed.sarif")[0]
+            self.assertEqual(result["properties"]["state"], "dismissed")
+            with (root / "triage-log.csv").open() as fh:
+                rows = list(csv.DictReader(fh))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[-1]["challenge_result"], "upheld")
 
     def assert_challenge_schema_refused_without_writes(self, document, severity):
         # Exercise the real CLI both with normal imports and with site packages

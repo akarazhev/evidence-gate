@@ -195,6 +195,7 @@ def is_allowed(path: str, exclusions: list[dict] | None = None) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", help="Paths to check")
+    parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Repository root")
     parser.add_argument("--list", action="store_true", help="Print active patterns")
     args = parser.parse_args()
 
@@ -216,7 +217,7 @@ def main() -> int:
     violations = []
     for path in args.paths:
         try:
-            check_path(path, exclusions)
+            resolve_within(args.repo, path, exclusions)
         except ScopeViolation as exc:
             violations.append(exc)
 

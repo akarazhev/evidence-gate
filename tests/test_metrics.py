@@ -8,11 +8,13 @@ import unittest
 import metrics
 from tests import REPO_ROOT
 from tests.helpers import temp_tree, write_log
+from tests.test_record_verdict import make_verdict
 
 
 def row(**overrides) -> dict:
     base = {
-        "reviewed_at": "2026-09-01T10:00:00+00:00", "finding_id": "F-000000000001",
+        "reviewed_at": "2020-01-01T00:00:00+00:00",
+        "recorded_at": "2026-09-01T10:00:00+00:00", "finding_id": "F-000000000001",
         "severity": "medium", "evidence_level": "traced", "confidence": "high",
         "initial_verdict": "true_positive", "challenge_result": "upheld",
         "final_state": "confirmed", "minutes_spent": "10",
@@ -28,8 +30,65 @@ def compute(rows):
     return metrics.compute(metrics.collapse(rows))
 
 
-def decision(finding_id, value, reviewed_at="2026-09-02T10:00:00+00:00"):
-    return {"finding_id": finding_id, "human_decision": value, "reviewed_at": reviewed_at}
+def decision(finding_id, value, recorded_at="2026-09-02T10:00:00+00:00"):
+    return {"finding_id": finding_id, "human_decision": value, "recorded_at": recorded_at}
+
+
+class TestRecordedOrder(unittest.TestCase):
+    def record(self, root, verdict, supersede=False):
+        path = root / "verdict.json"
+        path.write_text(json.dumps(verdict), encoding="utf-8")
+        proc = subprocess.run([
+            sys.executable, str(REPO_ROOT / "scripts/record_verdict.py"),
+            "--verdict", str(path), "--agent", "model-a",
+            "--log", str(root / "triage-log.csv"),
+            "--sarif-out", str(root / "reviewed.sarif"),
+            *(["--supersede"] if supersede else []),
+        ], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def compare_writer_and_metrics(self, root, expected_state, expected_coverage):
+        props = json.loads((root / "reviewed.sarif").read_text())["runs"][0]["results"][0]["properties"]
+        records = metrics.collapse(metrics.load_rows(root / "triage-log.csv"))
+        self.assertEqual(props["state"], expected_state)
+        self.assertEqual(records[0]["final_state"], props["state"],
+                         "metrics must name the state the real writer emitted")
+        self.assertEqual(bool(records[0].get("human_decision")), bool(props.get("human_decision")),
+                         "metrics must agree with the writer about current human consent")
+        self.assertEqual(metrics.compute(records)["human_decision_coverage_pct"], expected_coverage)
+
+    def test_later_recording_with_earlier_reviewed_at_matches_sarif(self):
+        with temp_tree({}) as root:
+            first = make_verdict(severity="low")
+            self.record(root, first)
+            self.record(root, make_verdict(
+                severity="low", verdict="false_positive",
+                reviewer={"agent": "model-a", "reviewed_at": "2026-09-01T09:00:00+00:00"},
+            ), supersede=True)
+            self.compare_writer_and_metrics(root, "dismissed", 0.0)
+
+    def test_revision_recorded_after_decision_clears_consent_in_both_outputs(self):
+        with temp_tree({}) as root:
+            self.record(root, make_verdict(severity="low"))
+            proc = subprocess.run([
+                sys.executable, str(REPO_ROOT / "scripts/record_human_decision.py"),
+                "--finding-id", "F-000000000001", "--decision", "accepted", "--by", "appsec-oncall",
+                "--log", str(root / "triage-log.csv"), "--sarif", str(root / "reviewed.sarif"),
+            ], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.compare_writer_and_metrics(root, "confirmed", 100.0)
+            self.record(root, make_verdict(
+                severity="low", verdict="false_positive",
+                reviewer={"agent": "model-a", "reviewed_at": "2026-09-01T11:00:00+00:00"},
+            ), supersede=True)
+            self.compare_writer_and_metrics(root, "dismissed", 0.0)
+
+    def test_since_uses_recorded_event_time_not_model_self_report(self):
+        records = metrics.collapse([
+            row(finding_id="F-new", reviewed_at="2020-01-01T00:00:00Z", recorded_at="2026-09-02T00:00:00Z"),
+            row(finding_id="F-old", reviewed_at="2099-01-01T00:00:00Z", recorded_at="2026-07-01T00:00:00Z"),
+        ])
+        self.assertEqual([r["finding_id"] for r in metrics.filter_since(records, "2026-09-01")], ["F-new"])
 
 
 class TestCompute(unittest.TestCase):
@@ -56,7 +115,7 @@ class TestCompute(unittest.TestCase):
         records = metrics.collapse([
             row(minutes_spent="0"),
             {"finding_id": "F-000000000001", "human_decision": "accepted",
-             "reviewed_at": "2026-09-02T10:00:00+00:00", "minutes_spent": "0"},
+             "recorded_at": "2026-09-02T10:00:00+00:00", "minutes_spent": "0"},
         ])
         m = metrics.compute(records)
         self.assertEqual(records[0]["triage_minutes_total"], 0.0)
@@ -66,39 +125,39 @@ class TestCompute(unittest.TestCase):
     def test_since_filter(self):
         with temp_tree({"placeholder": ""}) as root:
             log = root / "triage-log.csv"
-            write_log(log, [row(reviewed_at="2026-07-01T10:00:00+00:00"),
-                            row(finding_id="F-2", reviewed_at="2026-09-01T10:00:00+00:00")])
+            write_log(log, [row(recorded_at="2026-07-01T10:00:00+00:00"),
+                            row(finding_id="F-2", recorded_at="2026-09-01T10:00:00+00:00")])
             kept = metrics.filter_since(metrics.collapse(metrics.load_rows(log)), "2026-08-01")
         self.assertEqual([r["finding_id"] for r in kept], ["F-2"])
 
 
 class TestCollapse(unittest.TestCase):
     def test_superseded_verdict_counts_once(self):
-        collapsed = metrics.collapse([row(), row(final_state="dismissed", reviewed_at="2026-09-02T10:00:00+00:00", supersedes="old")])
+        collapsed = metrics.collapse([row(), row(final_state="dismissed", recorded_at="2026-09-02T10:00:00+00:00", supersedes="old")])
         self.assertEqual((len(collapsed), collapsed[0]["final_state"]), (1, "dismissed"))
 
     def test_human_decision_row_merges_into_the_finding(self):
-        collapsed = metrics.collapse([row(), {"finding_id": "F-000000000001", "human_decision": "rejected", "human_decision_by": "appsec-oncall", "reviewed_at": "2026-09-02T10:00:00+00:00"}])
+        collapsed = metrics.collapse([row(), {"finding_id": "F-000000000001", "human_decision": "rejected", "human_decision_by": "appsec-oncall", "recorded_at": "2026-09-02T10:00:00+00:00"}])
         self.assertEqual((collapsed[0]["final_state"], collapsed[0]["human_decision"]), ("confirmed", "rejected"))
 
     def test_missing_or_malformed_timestamps_have_a_stable_fallback(self):
-        rows = [row(final_state="confirmed", reviewed_at="not-a-timestamp"), row(final_state="dismissed", reviewed_at="")]
+        rows = [row(final_state="confirmed", recorded_at="not-a-timestamp"), row(final_state="dismissed", recorded_at="")]
         self.assertEqual(metrics.collapse(rows)[0]["final_state"], "dismissed")
         self.assertEqual(metrics.collapse(list(reversed(rows)))[0]["final_state"], "confirmed")
 
     def test_revisions_are_counted_from_verdict_rows(self):
-        self.assertEqual(compute([row(), row(reviewed_at="2026-09-02T10:00:00+00:00", minutes_spent="")])["revisions"], 1)
+        self.assertEqual(compute([row(), row(recorded_at="2026-09-02T10:00:00+00:00", minutes_spent="")])["revisions"], 1)
 
 
 class TestCollapseSemantics(unittest.TestCase):
     def test_new_verdict_does_not_inherit_the_old_challenge(self):
         first = row(challenge_result="upheld", validator="model-b")
-        second = row(reviewed_at="2026-09-02T10:00:00+00:00", challenge_result="", validator="", supersedes="old")
+        second = row(recorded_at="2026-09-02T10:00:00+00:00", challenge_result="", validator="", supersedes="old")
         collapsed = metrics.collapse([first, second])
         self.assertEqual((collapsed[0]["challenge_result"], collapsed[0]["validator"]), ("", ""))
 
     def test_decision_survives_a_verdict_revision_recorded_before_it(self):
-        collapsed = metrics.collapse([row(), decision("F-000000000001", "rejected", "2026-09-03T10:00:00+00:00"), row(reviewed_at="2026-09-02T10:00:00+00:00", final_state="dismissed")])
+        collapsed = metrics.collapse([row(), decision("F-000000000001", "rejected", "2026-09-03T10:00:00+00:00"), row(recorded_at="2026-09-02T10:00:00+00:00", final_state="dismissed")])
         self.assertEqual((collapsed[0]["human_decision"], collapsed[0]["final_state"]), ("rejected", "dismissed"))
 
     def test_later_verdict_supersedes_decision_without_erasing_history_or_time(self):
@@ -106,7 +165,7 @@ class TestCollapseSemantics(unittest.TestCase):
             **decision("F-000000000001", "accepted"), "minutes_spent": "3",
             "human_decision_at": "2026-09-02T10:00:00+00:00",
             "human_decision_by": "appsec-oncall", "human_rationale": "Agreed with confirmation",
-        }, row(reviewed_at="2026-09-03T10:00:00+00:00", initial_verdict="false_positive",
+        }, row(recorded_at="2026-09-03T10:00:00+00:00", initial_verdict="false_positive",
                final_state="dismissed", minutes_spent="4", supersedes="old")]
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
@@ -134,7 +193,7 @@ class TestCollapseSemantics(unittest.TestCase):
     def test_decision_and_verdict_order_uses_aware_instants(self):
         accepted = decision("F-000000000001", "accepted", "2026-09-01T12:00:00+03:00")
         self.assertFalse(metrics.collapse([row(), accepted])[0].get("human_decision"))
-        earlier = row(reviewed_at="2026-09-01T08:00:00Z")
+        earlier = row(recorded_at="2026-09-01T08:00:00Z")
         self.assertEqual(metrics.collapse([accepted, earlier])[0]["human_decision"], "accepted")
 
     def test_equal_timestamps_break_by_log_position(self):
@@ -143,27 +202,27 @@ class TestCollapseSemantics(unittest.TestCase):
         self.assertEqual(metrics.collapse([second, first])[0]["final_state"], "confirmed")
 
     def test_triage_minutes_sum_across_revisions(self):
-        self.assertEqual(metrics.collapse([row(minutes_spent="10"), row(reviewed_at="2026-09-02T10:00:00+00:00", minutes_spent="4")])[0]["triage_minutes_total"], 14.0)
+        self.assertEqual(metrics.collapse([row(minutes_spent="10"), row(recorded_at="2026-09-02T10:00:00+00:00", minutes_spent="4")])[0]["triage_minutes_total"], 14.0)
 
     def test_decision_minutes_stay_separate(self):
-        collapsed = metrics.collapse([row(minutes_spent="10"), {"finding_id": "F-000000000001", "human_decision": "accepted", "minutes_spent": "3", "reviewed_at": "2026-09-02T10:00:00+00:00"}])
+        collapsed = metrics.collapse([row(minutes_spent="10"), {"finding_id": "F-000000000001", "human_decision": "accepted", "minutes_spent": "3", "recorded_at": "2026-09-02T10:00:00+00:00"}])
         self.assertEqual((collapsed[0]["triage_minutes_total"], collapsed[0]["decision_minutes_total"]), (10.0, 3.0))
 
 
 class TestSinceSelectsFindings(unittest.TestCase):
     def test_a_finding_enters_whole_or_not_at_all(self):
-        records = metrics.collapse([row(reviewed_at="2026-07-01T10:00:00+00:00"), {"finding_id": "F-000000000001", "human_decision": "accepted", "reviewed_at": "2026-09-01T10:00:00+00:00"}])
+        records = metrics.collapse([row(recorded_at="2026-07-01T10:00:00+00:00"), {"finding_id": "F-000000000001", "human_decision": "accepted", "recorded_at": "2026-09-01T10:00:00+00:00"}])
         kept = metrics.filter_since(records, "2026-08-01")
         self.assertEqual((len(kept), kept[0]["final_state"], kept[0]["human_decision"]), (1, "confirmed", "accepted"))
 
     def test_untouched_findings_fall_outside_the_window(self):
-        self.assertEqual(metrics.filter_since(metrics.collapse([row(reviewed_at="2026-07-01T10:00:00+00:00")]), "2026-08-01"), [])
+        self.assertEqual(metrics.filter_since(metrics.collapse([row(recorded_at="2026-07-01T10:00:00+00:00")]), "2026-08-01"), [])
 
 
 class TestChronologicalTimestamps(unittest.TestCase):
     def test_offset_verdict_winner_is_chronological(self):
-        earlier = row(reviewed_at="2026-09-01T12:00:00+03:00", final_state="dismissed")
-        later = row(reviewed_at="2026-09-01T10:00:00+00:00", final_state="confirmed")
+        earlier = row(recorded_at="2026-09-01T12:00:00+03:00", final_state="dismissed")
+        later = row(recorded_at="2026-09-01T10:00:00+00:00", final_state="confirmed")
         for events in ([earlier, later], [later, earlier]):
             with self.subTest(events=events):
                 record = metrics.collapse(events)[0]
@@ -173,29 +232,29 @@ class TestChronologicalTimestamps(unittest.TestCase):
     def test_equivalent_and_unqualified_instants_break_by_log_index(self):
         for timestamp in ("2026-09-01T10:00:00", "2026-09-01T10:00:00Z", "2026-09-01T13:00:00+03:00"):
             with self.subTest(timestamp=timestamp):
-                first = row(reviewed_at=timestamp, final_state="dismissed")
+                first = row(recorded_at=timestamp, final_state="dismissed")
                 self.assertEqual(metrics.collapse([first, row()])[0]["final_state"], "confirmed")
                 self.assertEqual(metrics.collapse([row(), first])[0]["final_state"], "dismissed")
 
     def test_invalid_and_missing_instants_sort_before_valid_events(self):
         for timestamp in ("invalid", "", None):
             with self.subTest(timestamp=timestamp):
-                invalid = row(reviewed_at=timestamp, final_state="dismissed")
+                invalid = row(recorded_at=timestamp, final_state="dismissed")
                 self.assertEqual(metrics.collapse([row(), invalid])[0]["final_state"], "confirmed")
         missing = row(final_state="dismissed")
-        del missing["reviewed_at"]
+        del missing["recorded_at"]
         self.assertEqual(metrics.collapse([row(), missing])[0]["final_state"], "confirmed")
 
     def test_since_cli_compares_aware_instants_and_unqualified_utc(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
             write_log(log, [
-                row(finding_id="F-before", reviewed_at="2026-09-01T12:00:00+03:00"),
-                row(finding_id="F-equal", reviewed_at="2026-09-01T09:30:00Z"),
-                row(finding_id="F-naive", reviewed_at="2026-09-01T10:00:00"),
-                row(finding_id="F-after", reviewed_at="2026-09-01T10:00:00+00:00"),
-                row(finding_id="F-invalid", reviewed_at="invalid"),
-                row(finding_id="F-missing", reviewed_at=""),
+                row(finding_id="F-before", recorded_at="2026-09-01T12:00:00+03:00"),
+                row(finding_id="F-equal", recorded_at="2026-09-01T09:30:00Z"),
+                row(finding_id="F-naive", recorded_at="2026-09-01T10:00:00"),
+                row(finding_id="F-after", recorded_at="2026-09-01T10:00:00+00:00"),
+                row(finding_id="F-invalid", recorded_at="invalid"),
+                row(finding_id="F-missing", recorded_at=""),
             ])
             for cutoff in ("2026-09-01T11:30:00+02:00", "2026-09-01T09:30:00"):
                 with self.subTest(cutoff=cutoff):
@@ -237,12 +296,12 @@ class TestAgentAccuracy(unittest.TestCase):
         self.assertNotIn("false_positive_rate_pct", m)
 
     def test_render_reports_revisions(self):
-        self.assertIn("Verdicts revised         1", metrics.render(compute([row(), row(reviewed_at="2026-09-02T10:00:00+00:00")])))
+        self.assertIn("Verdicts revised         1", metrics.render(compute([row(), row(recorded_at="2026-09-02T10:00:00+00:00")])))
 
 
 class TestUndefinedDenominator(unittest.TestCase):
     def test_accuracy_is_withheld_when_nothing_is_decided(self):
-        m = compute([row(final_state="human_review", challenge_result="refuted"), {"finding_id": "F-000000000001", "human_decision": "accepted", "reviewed_at": "2026-09-02T10:00:00+00:00"}])
+        m = compute([row(final_state="human_review", challenge_result="refuted"), {"finding_id": "F-000000000001", "human_decision": "accepted", "recorded_at": "2026-09-02T10:00:00+00:00"}])
         self.assertEqual(m["decided"], 0)
         self.assertIsNone(m["human_decision_coverage_pct"])
         self.assertIsNone(m["agent_accuracy_pct"])

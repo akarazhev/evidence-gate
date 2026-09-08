@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import unittest
+from datetime import datetime, timezone
 
 import record_verdict
 from tests import REPO_ROOT
@@ -84,13 +85,33 @@ class TestDecisionRecording(unittest.TestCase):
         self.assertEqual(rows[-1]["human_decision_by"], "appsec-oncall")
         self.assertEqual(rows[-1]["finding_id"], "F-000000000001")
 
+    def test_decision_stamps_recorded_at_in_utc(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [verdict_row()])
+            before = datetime.now(timezone.utc)
+            proc = self.run_script([
+                "--finding-id", "F-000000000001", "--decision", "accepted", "--by", "appsec-oncall",
+                "--log", str(log), "--sarif", str(root / "reviewed.sarif"),
+            ])
+            after = datetime.now(timezone.utc)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with log.open() as fh:
+                recorded = list(csv.DictReader(fh))[-1]
+            self.assertTrue(recorded.get("recorded_at"), "human decision must carry the writer's event time")
+            moment = datetime.fromisoformat(recorded["recorded_at"])
+            self.assertEqual(moment.utcoffset().total_seconds(), 0)
+            self.assertLessEqual(before, moment)
+            self.assertLessEqual(moment, after)
+            self.assertEqual(recorded["recorded_at"], recorded["human_decision_at"])
+
     def test_stale_log_header_is_refused_and_nothing_is_written(self):
         # A log written before a column existed. Its verdict row is still
         # readable, so the run gets past the "no verdict" check and reaches the
         # log contract, which must refuse rather than append under old names.
         with temp_tree({}) as root:
             log = root / "triage-log.csv"
-            stale_fields = [f for f in record_verdict.LOG_FIELDS if f != "notes"]
+            stale_fields = [f for f in record_verdict.LOG_FIELDS if f != "recorded_at"]
             values = {
                 "finding_id": "F-000000000001",
                 "initial_verdict": "true_positive",

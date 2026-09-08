@@ -24,16 +24,22 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = REPO_ROOT / "CLAUDE.md"
-PLACEHOLDER = re.compile(r"<[A-Za-z][^>]*>")
+PLACEHOLDER = re.compile(r"<[A-Za-z][^>]*>", re.DOTALL)
 
 
 def find_placeholders(text: str) -> list[tuple[int, str]]:
-    """Line numbers and contents of every line still carrying a placeholder."""
-    return [
-        (number, line.strip())
-        for number, line in enumerate(text.splitlines(), start=1)
-        if PLACEHOLDER.search(line)
-    ]
+    """Line numbers and first lines of every placeholder still in the file.
+
+    Searched over the whole text, not line by line: the template wraps its
+    placeholders across lines, and a per-line pattern never closes on them. The
+    line-by-line version reported two of the eight in CLAUDE.md.
+    """
+    found = []
+    for match in PLACEHOLDER.finditer(text):
+        line_number = text.count("\n", 0, match.start()) + 1
+        first_line = match.group(0).splitlines()[0]
+        found.append((line_number, first_line.strip()))
+    return found
 
 
 def main() -> int:

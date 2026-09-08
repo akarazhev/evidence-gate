@@ -62,12 +62,12 @@ def collapse(rows: list[dict]) -> list[dict]:
     decision_minutes: dict[str, list[float]] = {}
     verdict_rows_seen: Counter = Counter()
     last_event: dict[str, str] = {}
-    for index, row in sorted(enumerate(rows), key=lambda pair: (_moment(pair[1].get("reviewed_at", "")), pair[0])):
+    for index, row in sorted(enumerate(rows), key=lambda pair: (_moment(pair[1].get("recorded_at", "")), pair[0])):
         finding_id = row.get("finding_id")
         if not finding_id:
             continue
-        last_event[finding_id] = row.get("reviewed_at", "")
-        event_key = (_moment(row.get("reviewed_at", "")), index)
+        last_event[finding_id] = row.get("recorded_at", "")
+        event_key = (_moment(row.get("recorded_at", "")), index)
         minutes = _minutes(row)
         if _is_verdict_row(row):
             verdicts[finding_id] = {key: value for key, value in row.items() if key not in DECISION_FIELDS}

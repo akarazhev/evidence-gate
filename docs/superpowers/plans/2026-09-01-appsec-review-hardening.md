@@ -5487,6 +5487,208 @@ git commit -m "fix: resolve minor review findings"
 ```
 
 ---
+### Task 24: Правки финального ревью ветки
+
+#### Controller execution contract
+
+- Preserve and commit the user's existing plan and spec edits. Steps 1–7 run
+  strictly in order, with behavior-level RED then minimal production GREEN in
+  Steps 1–6. Record exact commands, exit codes and material output in
+  `docs/superpowers/evidence/2026-09-01-red-tests.md`.
+- Files: `scripts/check_scope.py`, `scripts/check_template.py`,
+  `scripts/record_verdict.py`, `scripts/record_human_decision.py`,
+  `scripts/metrics.py`, `scripts/build_packet.py`, `Makefile`,
+  `templates/challenge.schema.json`, `README.md`, the seven corresponding
+  test modules (`test_check_scope`, `test_check_template`, `test_record_verdict`,
+  `test_human_decision`, `test_metrics`, `test_build_packet`, `test_makefile`),
+  this plan, the design spec, and the red-tests and plan-fixes evidence files.
+- Execute and restore five mutations one at a time: direct lexical CLI scope
+  call (both process refusals fail); old line-by-line placeholder search
+  (multiline process refusal fails); metrics ordering/last-event key restored
+  to `reviewed_at` (actual writer/SARIF disagrees with metrics); reverse
+  validator/challenge refusal removed (audit row is written); verdict-digest
+  equality refusal bypassed (stale challenge writes or changes artifacts).
+  Keep `re.DOTALL`: removing it is inert because `[^>]` already matches newlines.
+- Refusal tests check absent or unchanged artifacts inside their temporary
+  trees. The recorded-order integration compares real writer/SARIF and metrics
+  for the same event sequence.
+- Step 7 is last: write the depth-audit table for exactly its five controls to
+  the evidence file, and do not fix its findings. After the table, no further
+  product/test edits; only verification, diff inspection, and commit.
+- Before commit run `python3 -m unittest tests.test_check_scope
+  tests.test_check_template tests.test_record_verdict tests.test_human_decision
+  tests.test_metrics tests.test_build_packet tests.test_makefile -v`, then one
+  full `make test`, then `git diff --check`. No network or installations.
+- Stage every listed file that changed; commit once with
+  `git commit -m "fix: close final review control gaps"`.
+
+Все пять проверены исполнением. Пункты 3 и 5 меняли замысел, решения приняты и
+записаны в спеку.
+
+- [x] **Step 1: Ручной шлюз области тоже лексический**
+
+Проверено: `check_scope.py app/handler.py` возвращает `OK` для ссылки на
+`../secrets/token.txt`, и `check_scope.py /etc/hosts` тоже возвращает `OK`.
+`docs/03` документирует ровно этот путь как способ безопасно расширить контекст:
+`check_scope.py <file> && sed -n '1,120p' <file>`. То есть задокументированный
+человеческий обходной путь обходит контроль.
+
+`resolve_within` был добавлен в Task 21, но подключён только к `build_packet`.
+Подключить и к CLI: аргумент `--repo` со значением по умолчанию `Path.cwd()`,
+каждый путь проверяется через `resolve_within(args.repo, path, exclusions)`.
+Абсолютный путь вне репозитория отвергается той же веткой «outside repository».
+
+Тесты: ссылка на исключённое — exit 2; абсолютный путь наружу — exit 2; обычный
+файл — exit 0. Через процесс, потому что предмет проверки — код возврата CLI.
+
+- [x] **Step 2: Шлюз шаблона не видит многострочные плейсхолдеры**
+
+Проверено на живом `CLAUDE.md`: построчный поиск находит 2 плейсхолдера, поиск по
+всему тексту — 8. Заполнив видимые два, инженер получил бы exit 0 при шести
+оставшихся, и `docs/03` подтвердил бы ему, что файл описывает его репозиторий.
+
+Причина: `<[A-Za-z][^>]*>` применяется к строке, а плейсхолдеры переносятся.
+Искать по всему тексту, номер строки вычислять по смещению совпадения:
+
+```python
+PLACEHOLDER = re.compile(r"<[A-Za-z][^>]*>", re.DOTALL)
+
+
+def find_placeholders(text: str) -> list[tuple[int, str]]:
+    """Line numbers and first lines of every placeholder still in the file.
+
+    Searched over the whole text, not line by line: the template wraps its
+    placeholders across lines, and a per-line pattern never closes on them. The
+    line-by-line version reported two of the eight in CLAUDE.md.
+    """
+    found = []
+    for match in PLACEHOLDER.finditer(text):
+        line_number = text.count("\n", 0, match.start()) + 1
+        first_line = match.group(0).splitlines()[0]
+        found.append((line_number, first_line.strip()))
+    return found
+```
+
+Тест: фикстура с переносом внутри плейсхолдера даёт отказ. Мутационная проверка —
+вернуть построчный поиск, убедиться что процессный тест краснеет. `re.DOTALL`
+сохраняется: удаление флага ничего не меняет, потому что `[^>]` включает перенос.
+
+- [x] **Step 3: Писатель и метрики расходятся в том, какая ревизия текущая**
+
+Проверено обеими сторонами: вердикт 09:00, записанный после вердикта 10:00, даёт
+`dismissed` в SARIF и `confirmed` в метриках; ревизия 11:00 после решения 12:00
+очищает решение в SARIF, но метрики применяют старое решение к новому вердикту и
+рапортуют 100% покрытия.
+
+**Решение принято и внесено в спеку: очерёдность определяет момент записи.**
+`reviewed_at` — самоотчёт модели, и опирать на него управляющее решение нельзя по
+той же причине, по которой `--agent` переехал в CLI.
+
+- `LOG_FIELDS` получает `recorded_at` сразу после `reviewed_at`. Рекордер и
+  `record_human_decision` проставляют `datetime.now(timezone.utc).isoformat()`.
+- `collapse` сортирует по `(_moment(row["recorded_at"]), индекс)`.
+- Отмена решения более поздним вердиктом сравнивает `recorded_at`.
+- `filter_since` считает по `recorded_at`.
+- `reviewed_at` остаётся в логе как факт и нигде не управляет.
+
+Миграция колонки — существующим механизмом `check_log_compatible`.
+
+Тесты: вердикт с более ранним `reviewed_at`, записанный позже, выигрывает;
+решение, записанное до ревизии, отменяется ею; SARIF и метрики называют одно и то
+же состояние на одной последовательности записей.
+
+- [x] **Step 4: Валидатор записывается без челленджа**
+
+Проверено: `--validator model-b` без `--challenge` даёт exit 0 и строку
+`model-a,model-b` при пустом `challenge_result`. Спека говорит «тогда и только
+тогда», обеспечена была одна половина.
+
+В `main`, рядом с существующей проверкой:
+
+```python
+    if args.validator and args.challenge is None:
+        parser.error(
+            "--validator without --challenge would record a validator that "
+            "validated nothing"
+        )
+```
+
+В `Makefile` цель `record` передаёт `--validator` только вместе с `--challenge`:
+обе подстановки ставятся под один `$(if $(wildcard findings/challenges/$(ID).json),...)`.
+
+Тест: комбинация отвергается с non-zero, лог не создан.
+
+- [x] **Step 5: Устаревший челлендж авторизует противоположную ревизию**
+
+Челлендж, подтвердивший `true_positive`, принимается при замещении вердикта на
+`false_positive`. Привязка идёт по `finding_id`, который у ревизий общий.
+
+**Решение принято и внесено в спеку: челлендж привязывается к ревизии вердикта
+каноническим хешем.**
+
+В `build_packet.py`:
+
+```python
+def verdict_digest(verdict: dict) -> str:
+    """Canonical hash of a verdict, binding a challenge to the revision it read.
+
+    finding_id is shared by every revision of a finding, so it cannot express
+    "this challenge refuted that verdict". Without a tighter binding an upheld
+    challenge for a true positive was accepted when superseding it with a false
+    positive - authorising the opposite claim.
+    """
+    canonical = json.dumps(verdict, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+```
+
+`build_challenge_packet` кладёт его в пакет и в инструкции требует скопировать
+дословно. `templates/challenge.schema.json` получает обязательное
+`verdict_digest` (строка, 16 hex). `record_verdict` пересчитывает хеш переданного
+вердикта и отказывает при несовпадении, до любой записи:
+
+```python
+    if challenge_supplied:
+        expected = verdict_digest(verdict)
+        supplied = challenge.get("verdict_digest")
+        if supplied != expected:
+            print(f"REFUSED: challenge was built for a different verdict.\n",
+                  file=sys.stderr)
+            print(f"  challenge carries: {supplied}", file=sys.stderr)
+            print(f"  this verdict is:   {expected}\n", file=sys.stderr)
+            print("A challenge refutes one revision, not a finding. Re-run the "
+                  "validation pass against the verdict you are recording.",
+                  file=sys.stderr)
+            return 2
+```
+
+Ломающее изменение схемы: прежние челленджи не пройдут. Данных нет, цена нулевая
+— зафиксировать в README рядом с прочими ломающими.
+
+Тесты: челлендж от прежней ревизии отвергается, ничего не пишется; челлендж от
+текущей принимается; отсутствующий `verdict_digest` отвергается схемой.
+
+- [x] **Step 6: Мелкие**
+
+- `annotate` считает `in_scope` лексически, поэтому псевдоним через ссылку
+  показывается в области и получает рабочий id. Использовать проверку с
+  разрешением пути, ту же что и в Step 1.
+- Дописать хеши финальных коммитов в записи GREEN по Tasks 21 и 22.
+
+- [x] **Step 7: Пересмотреть остальные контроли одним вопросом**
+
+Все обходы этого ревью имеют одну форму: проверяется мельче, чем используется.
+Контейнер вместо результата, имя вместо открываемого файла, значение вместо
+переданного флага, тип контейнера вместо поля сортировки, строка вместо момента
+записи.
+
+Пройти оставшиеся контроли — `check_scope`, `check_log_compatible`,
+`check_template`, `_fallback_validate`, отказ независимости — и для каждого
+ответить письменно: на что опирается потребитель и на ту ли глубину проверяет
+контроль. Результат в файл доказательств. Это не поиск багов вслепую, а один
+конкретный вопрос к пяти известным местам.
+
+---
+
 ## Definition of Done
 
 - `make test` зелёный на голом Python 3.9+ без единой установки.

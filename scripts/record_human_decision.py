@@ -123,6 +123,7 @@ def main() -> int:
     append_log(
         {
             "reviewed_at": decided_at,
+            "recorded_at": decided_at,
             "finding_id": args.finding_id,
             "id_scheme": verdict_row.get("id_scheme", ""),
             "rule_id": verdict_row.get("rule_id", ""),

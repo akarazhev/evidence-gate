@@ -303,10 +303,23 @@ def build_triage_packet(
     }
 
 
+def verdict_digest(verdict: dict) -> str:
+    """Canonical hash of a verdict, binding a challenge to the revision it read.
+
+    finding_id is shared by every revision of a finding, so it cannot express
+    "this challenge refuted that verdict". Without a tighter binding an upheld
+    challenge for a true positive was accepted when superseding it with a false
+    positive - authorising the opposite claim.
+    """
+    canonical = json.dumps(verdict, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
 def build_challenge_packet(verdict: dict) -> dict:
     return {
         "packet_type": "challenge",
         "finding_id": verdict["finding_id"],
+        "verdict_digest": verdict_digest(verdict),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "procedure": "prompts/adversarial-validate.md",
         "original_verdict": verdict,
@@ -315,6 +328,7 @@ def build_challenge_packet(verdict: dict) -> dict:
             "session on a different model from the one in original_verdict.reviewer.agent. "
             "Re-derive the data flow yourself; do not trust the prior trace. "
             "Record every refutation you attempt and whether it held. "
+            "Copy verdict_digest from this packet verbatim into your challenge. "
             "Output JSON conforming to templates/challenge.schema.json and nothing else."
         ),
     }
@@ -329,13 +343,15 @@ def annotate(results: list[dict], repo: Path, exclusions: list[dict]) -> list[di
     annotated = []
     for result in results:
         item = dict(result)
+        item["in_scope"] = _in_scope(result["file"], repo, exclusions)
         try:
-            item["finding_id"] = compute_finding_id(result, repo, exclusions)
+            item["finding_id"] = (
+                compute_finding_id(result, repo, exclusions) if item["in_scope"] else None
+            )
         except (ScopeViolation, FileNotFoundError, ValueError):
             # Excluded, absent, or unidentifiable. Never read an excluded file
             # just to print a label for it.
             item["finding_id"] = None
-        item["in_scope"] = _in_scope(result["file"], exclusions)
         annotated.append(item)
     return annotated
 
@@ -546,9 +562,9 @@ def main() -> int:
     return 0
 
 
-def _in_scope(path: str, exclusions: list[dict] | None = None) -> bool:
+def _in_scope(path: str, repo: Path, exclusions: list[dict] | None = None) -> bool:
     try:
-        check_path(path, exclusions)
+        resolve_within(repo, path, exclusions)
         return True
     except ScopeViolation:
         return False
