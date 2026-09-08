@@ -598,6 +598,30 @@ class TestIndependenceControl(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("whitespace-only", proc.stderr)
 
+    def test_malformed_quoted_header_is_controlled_log_error_without_writes(self):
+        with temp_tree({}) as root:
+            self.setup_files(root)
+            log = root / "triage-log.csv"
+            log.write_text('"unterminated\n', encoding="utf-8")
+            before_log = log.read_bytes()
+            sarif = root / "reviewed.sarif"
+            proc = self.run_recorder(
+                [
+                    "--verdict", str(root / "verdict.json"),
+                    "--agent", "model-a",
+                    "--log", str(log),
+                    "--sarif-out", str(sarif),
+                ],
+                root,
+            )
+            self.assertEqual(log.read_bytes(), before_log)
+            self.assertFalse(sarif.exists(), "header refusal must precede SARIF")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("LOG ERROR", proc.stderr)
+            self.assertIn("row 1", proc.stderr)
+            self.assertIn("invalid CSV", proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+
     def test_newline_in_notes_is_refused_without_writes(self):
         with temp_tree({}) as root:
             self.setup_files(root)

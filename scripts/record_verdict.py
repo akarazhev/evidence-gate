@@ -338,7 +338,12 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
 
     with io.StringIO(contents, newline="") as fh:
         reader = csv.reader(fh, strict=True)
-        header = next(reader, None)
+        try:
+            header = next(reader, None)
+        except csv.Error as exc:
+            raise ValidationError(
+                f"{path} row 1 has invalid CSV: {exc}"
+            ) from exc
         if header is None:
             # Empty file: nothing to compare against, and append_log will lay
             # down the header on the next write. The two functions have to
