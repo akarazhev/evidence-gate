@@ -522,3 +522,18 @@
   on actual artifact side effects; restoration, 76 focused tests, and one final
   203-test full suite pass. The change uses a separate follow-up commit named
   `fix: validate existing SARIF before recording`.
+
+## Task 23 files, evidence, verification, and staging
+
+- Before: Task 23 listed five findings only, without its exact file surface,
+  causal RED/GREEN procedure, focused and full verification, mode/diff review,
+  staging command, or one-commit contract.
+- After: The controller-authorized task text names the three production files,
+  four corresponding test modules, corrected plan, and this plan-fixes file;
+  requires behavior-level RED/GREEN evidence (including direct script
+  execution and a same-length schema mutation), focused tests, one final
+  `make test`, diff/mode verification, exact staging, and one commit named
+  `fix: resolve minor review findings`.
+- Why: This is an unambiguous local completeness correction. It preserves all
+  established validation, scope, identity, queue, egress, audit, and metrics
+  semantics while making the five final-review corrections auditable.

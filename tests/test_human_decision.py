@@ -36,6 +36,13 @@ class TestDecisionRecording(unittest.TestCase):
             [sys.executable, str(SCRIPT), *args], capture_output=True, text=True
         )
 
+    def test_script_can_be_invoked_directly(self):
+        proc = subprocess.run(
+            [str(SCRIPT), "--help"], capture_output=True, text=True
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--finding-id", proc.stdout)
+
     def test_unknown_finding_is_refused(self):
         with temp_tree({}) as root:
             log = root / "triage-log.csv"

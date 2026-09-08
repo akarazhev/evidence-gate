@@ -417,6 +417,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.finding_id == "":
+        parser.error("--finding-id must not be empty")
     if args.finding_id and args.index is not None:
         parser.error("pass either --finding-id or --index, not both")
 

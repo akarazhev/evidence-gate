@@ -508,6 +508,11 @@ class TestFindingIdAddressing(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("No finding with id F-doesnotexist", proc.stderr)
 
+    def test_empty_id_is_explicitly_refused(self):
+        proc = self.run_builder(["--sarif", str(SARIF), "--finding-id", ""])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--finding-id must not be empty", proc.stderr)
+
     def test_id_and_index_together_are_refused(self):
         proc = self.run_builder(
             ["--sarif", str(SARIF), "--finding-id", "F-x", "--index", "0"]

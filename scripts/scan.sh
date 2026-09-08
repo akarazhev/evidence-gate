@@ -4,7 +4,7 @@ set -eu
 # Rules come from a local directory by default. docs/03-data-handling.md
 # claims exactly one channel out of the perimeter — the review packet — and
 # `--config auto` quietly opened a second one by fetching rules from the
-# Semgrep registry and reporting telemetry. Going to the registry is still
+# Semgrep registry and reporting telemetry. Fetching remote rules is still
 # possible, but it is now a decision someone makes out loud.
 
 repo="${1:-.}"
@@ -17,7 +17,7 @@ config="${SEMGREP_CONFIG:-$root/rules}"
 # that leaves state behind is not a clean refusal.
 case "$config" in
   p/*|r/*|https://*)
-    printf 'NETWORK: fetching rules from the Semgrep registry (%s).\n' "$config" >&2
+    printf 'NETWORK: fetching remote rules (%s).\n' "$config" >&2
     printf 'This is a second channel out of the perimeter.\n' >&2
     printf 'See docs/03-data-handling.md.\n\n' >&2
     ;;

@@ -816,6 +816,19 @@ class TestSchemaDriftGuard(unittest.TestCase):
             (record_verdict.SCHEMA_DIR / "verdict.schema.json").read_text(encoding="utf-8")
         )
         self.assertEqual(len(schema["allOf"]), 2)
+        self.assertEqual(
+            {
+                (
+                    tuple(condition["if"]["properties"]),
+                    tuple(condition["if"]["required"]),
+                )
+                for condition in schema["allOf"]
+            },
+            {
+                (("confidence",), ("confidence",)),
+                (("evidence_level",), ("evidence_level",)),
+            },
+        )
 
     def test_high_confidence_conditional_is_mirrored(self):
         self.assertTrue(

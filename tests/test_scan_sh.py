@@ -89,6 +89,16 @@ class TestScanScript(unittest.TestCase):
         self.assertIn("--disable-version-check", recorded)
         self.assertIn("p/security-audit", recorded)
 
+    def test_arbitrary_https_config_is_described_as_remote_rules(self):
+        with temp_tree({"placeholder": ""}) as root:
+            self.make_fake_semgrep(root / "bin")
+            proc = self.run_scan(
+                root, "https://rules.example.invalid/custom.yml", bindir=root / "bin"
+            )
+        self.assertEqual(proc.returncode, 42, "the stand-in must be what ran")
+        self.assertIn("remote rules", proc.stderr)
+        self.assertNotIn("Semgrep registry", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

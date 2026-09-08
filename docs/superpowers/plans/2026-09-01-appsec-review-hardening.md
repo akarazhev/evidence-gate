@@ -4197,10 +4197,14 @@ def filter_since(records: list[dict], since: str | None) -> list[dict]:
 
 ```python
     times = [
-        r["triage_minutes_total"] for r in rows if r.get("triage_minutes_total")
+        r["triage_minutes_total"]
+        for r in rows
+        if r.get("triage_minutes_total") is not None
     ]
     decision_times = [
-        r["decision_minutes_total"] for r in rows if r.get("decision_minutes_total")
+        r["decision_minutes_total"]
+        for r in rows
+        if r.get("decision_minutes_total") is not None
     ]
 ```
 
@@ -5419,11 +5423,68 @@ git commit -m "fix: resolve important review findings"
 
 ### Task 23: Мелкие
 
-- [ ] Пустой `--finding-id` отвергать явно, а не искать находку с пустым id.
-- [ ] `scripts/record_human_decision.py` сделать исполняемым (`chmod +x`), как остальные скрипты, либо всюду документировать вызов через `python3`. Выбрать первое — остальные скрипты исполняемые.
-- [ ] Страж дрейфа схемы усилить: сверять не только длину `allOf`, но и то, что два условия касаются `confidence` и `evidence_level`. Сейчас перестановка условий тест не заметит.
-- [ ] В сообщении `scan.sh` про сеть говорить «remote rules», а не «Semgrep registry»: произвольный `https://` конфиг не обязан вести в реестр.
-- [ ] В примере Task 19 поправить устаревший предикат нулевых минут.
+**Files:**
+- Modify: `scripts/build_packet.py`
+- Modify mode: `scripts/record_human_decision.py`
+- Modify: `scripts/scan.sh`
+- Modify: `tests/test_build_packet.py`
+- Modify: `tests/test_human_decision.py`
+- Modify: `tests/test_record_verdict.py`
+- Modify: `tests/test_scan_sh.py`
+- Modify: `docs/superpowers/plans/2026-09-01-appsec-review-hardening.md`
+- Modify: `docs/superpowers/evidence/2026-09-01-plan-fixes.md`
+
+- [ ] **Step 1: Написать поведенческие регрессии и зафиксировать RED**
+
+Добавить профильные тесты, которые проверяют наблюдаемое поведение:
+
+- пустое значение `--finding-id` явно отвергается с non-zero кодом, а не
+  превращается в другой режим CLI;
+- `scripts/record_human_decision.py --help` запускается непосредственно, без
+  `python3` перед путём к скрипту;
+- страж схемы проверяет не только два элемента `allOf`, но и точные поля их
+  условий: `confidence` и `evidence_level`;
+- произвольная конфигурация `https://` описывается как `remote rules`, без
+  утверждения, что это Semgrep registry. Использовать локальный stand-in
+  Semgrep; сеть в тесте не нужна.
+
+Выполнить отдельные профильные тесты. Для стража схемы временно заменить один
+из двух охраняемых ключей при неизменной длине `allOf`, получить RED на точной
+идентичности условия и сразу восстановить схему. Фактический вывод RED и GREEN
+сохранить в отчёте задачи.
+
+- [ ] **Step 2: Внести минимальные исправления**
+
+- Отличать переданный пустой `--finding-id` от отсутствующего аргумента и
+  вызвать `parser.error("--finding-id must not be empty")` до выбора режима.
+- Сделать `scripts/record_human_decision.py` исполняемым (`chmod +x`), как
+  остальные скрипты.
+- Усилить существующий страж схемы точным сравнением условных полей
+  `confidence` и `evidence_level`, сохранив проверку длины `allOf`.
+- В сетевом сообщении `scan.sh` использовать общее выражение `remote rules`.
+- В примере Task 19 сохранять нулевые минуты предикатом `is not None` как для
+  времени триажа, так и для времени решения человека.
+
+- [ ] **Step 3: Проверить профильные и полные наборы**
+
+```bash
+python3 -m unittest tests.test_build_packet tests.test_human_decision tests.test_record_verdict tests.test_scan_sh -v
+make test
+git diff --check
+git diff --summary
+git diff -- scripts/build_packet.py scripts/record_human_decision.py scripts/scan.sh tests/test_build_packet.py tests/test_human_decision.py tests/test_record_verdict.py tests/test_scan_sh.py docs/superpowers/plans/2026-09-01-appsec-review-hardening.md docs/superpowers/evidence/2026-09-01-plan-fixes.md
+```
+
+Проверить, что в diff ровно перечисленные файлы, изменение режима
+`record_human_decision.py` равно `100644 => 100755`, а временная мутация схемы
+полностью восстановлена.
+
+- [ ] **Step 4: Создать один коммит**
+
+```bash
+git add scripts/build_packet.py scripts/record_human_decision.py scripts/scan.sh tests/test_build_packet.py tests/test_human_decision.py tests/test_record_verdict.py tests/test_scan_sh.py docs/superpowers/plans/2026-09-01-appsec-review-hardening.md docs/superpowers/evidence/2026-09-01-plan-fixes.md
+git commit -m "fix: resolve minor review findings"
+```
 
 ---
 ## Definition of Done
