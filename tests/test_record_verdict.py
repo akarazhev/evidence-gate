@@ -8,6 +8,7 @@ is a defect of the same kind this whole workflow exists to catch.
 import csv
 import builtins
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -374,6 +375,41 @@ class TestIndependenceControl(unittest.TestCase):
         self.assert_noncanonical_id_refused_after_backend(
             "def validate(*, instance, schema):\n    pass\n"
         )
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("jsonschema"), "real jsonschema is not installed"
+    )
+    def test_noncanonical_id_is_refused_after_real_jsonschema_backend(self):
+        with temp_tree({}) as root:
+            verdict = make_verdict(severity="low", evidence_level="partial")
+            verdict["finding_id"] += "\n"
+            verdict_path = root / "verdict.json"
+            verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+            log = root / "triage-log.csv"
+            sarif = root / "reviewed.sarif"
+            argv = [
+                "record_verdict.py",
+                "--verdict", str(verdict_path),
+                "--agent", "model-a",
+                "--log", str(log),
+                "--sarif-out", str(sarif),
+            ]
+            stderr = io.StringIO()
+
+            def append_artifact(_row, path):
+                path.write_text("append reached", encoding="utf-8")
+
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(sys, "stderr", stderr), \
+                    mock.patch.object(
+                        record_verdict, "append_log", side_effect=append_artifact
+                    ):
+                returncode = record_verdict.main()
+
+            self.assertFalse(log.exists(), "canonical refusal must precede append")
+            self.assertFalse(sarif.exists(), "canonical refusal must precede SARIF")
+            self.assertEqual(returncode, 1, stderr.getvalue())
+            self.assertIn("canonical finding_id", stderr.getvalue())
 
     def test_noncanonical_id_is_refused_after_forced_fallback_backend(self):
         real_import = builtins.__import__
@@ -899,6 +935,47 @@ class TestLogCompatibility(unittest.TestCase):
             log = root / "triage-log.csv"
             write_log(log, [self.valid_row()])
             record_verdict.check_log_compatible(log, "content-v1")
+
+    def test_unicode_line_separator_round_trips_as_one_physical_line(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            record_verdict.append_log(
+                self.valid_row(notes="first\u2028second"), log
+            )
+            record_verdict.check_log_compatible(log, "content-v1")
+
+    def test_unterminated_quote_is_refused_even_with_trailing_blank_lines(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [self.valid_row()])
+            lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+            lines[1] = lines[1].rstrip("\r\n") + '"unterminated\n\n'
+            log.write_text("".join(lines), encoding="utf-8")
+            with self.assertRaises(record_verdict.ValidationError) as caught:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("row 2", str(caught.exception))
+            self.assertIn("CSV", str(caught.exception))
+
+    def test_well_formed_multiline_record_is_refused(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [self.valid_row(notes="first\nsecond")])
+            with self.assertRaises(record_verdict.ValidationError) as caught:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("row 2", str(caught.exception))
+            self.assertIn("spans physical lines", str(caught.exception))
+
+    def test_error_location_skips_blank_physical_lines(self):
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            write_log(log, [self.valid_row()])
+            lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+            malformed = lines[1].rstrip("\r\n") + ",unexpected\n"
+            log.write_text(lines[0] + "\n" + malformed, encoding="utf-8")
+            with self.assertRaises(record_verdict.ValidationError) as caught:
+                record_verdict.check_log_compatible(log, "content-v1")
+            self.assertIn("row 3", str(caught.exception))
+            self.assertIn("extra", str(caught.exception))
 
     def test_empty_or_whitespace_finding_id_is_refused(self):
         for finding_id in ("", "F-000000 000001"):

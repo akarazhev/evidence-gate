@@ -23,6 +23,7 @@ from pathlib import Path
 
 POLICY_PATH = Path(__file__).resolve().parent.parent / "policy" / "excluded-paths.yml"
 KNOWN_SECTIONS = ("exclusions", "scan_noise")
+EXCLUSION_KEYS = ("pattern", "owner", "reason")
 
 
 class ScopeViolation(Exception):
@@ -102,7 +103,14 @@ def _parse_policy(text: str) -> tuple[list[dict], list[str]]:
                 continue
             if current is not None and ":" in stripped:
                 k, v = stripped.split(":", 1)
-                current[k.strip()] = v.strip().strip("\"'").strip()
+                key = k.strip()
+                if key not in EXCLUSION_KEYS:
+                    allowed = ", ".join(EXCLUSION_KEYS)
+                    raise PolicyValidationError(
+                        f"line {line_number} has unsupported exclusions key "
+                        f"{key!r}; expected one of: {allowed}"
+                    )
+                current[key] = v.strip().strip("\"'").strip()
                 continue
             raise PolicyValidationError(
                 f"unrecognized exclusions syntax on line {line_number}: {raw!r}"

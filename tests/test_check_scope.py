@@ -84,6 +84,18 @@ class TestParsePolicy(unittest.TestCase):
                 "    reason: Runtime secrets\n"
             )
 
+    def test_unknown_exclusion_key_is_refused_with_line_number(self):
+        with self.assertRaisesRegex(ValueError, r"line 5.*-pattern"):
+            check_scope._parse_policy(
+                "exclusions:\n"
+                '  - pattern: "**/*.pem"\n'
+                "    owner: appsec\n"
+                "    reason: private keys\n"
+                '  -pattern: "**/.env"\n'
+                "    owner: appsec\n"
+                "    reason: runtime secrets\n"
+            )
+
     def test_live_policy_has_complete_exclusions(self):
         exclusions, _ = check_scope.load_policy()
         self.assertTrue(exclusions)
@@ -137,7 +149,10 @@ class TestPolicyProcess(unittest.TestCase):
 
     def test_cli_honours_tab_after_list_marker(self):
         proc = self.run_with_policy(
-            'exclusions:\n  -\tpattern: "**/.env"\n'
+            'exclusions:\n  - pattern: "**/*.pem"\n'
+            "    owner: appsec\n"
+            "    reason: private keys\n"
+            '  -\tpattern: "**/.env"\n'
             "    owner: appsec\n"
             "    reason: Runtime secrets\n"
         )

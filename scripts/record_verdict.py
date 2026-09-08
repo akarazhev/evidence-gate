@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import re
 import sys
@@ -331,8 +332,12 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
     if not path.exists():
         return
 
-    with path.open(encoding="utf-8", newline="") as fh:
-        reader = csv.reader(fh)
+    with path.open(encoding="utf-8", newline="") as source:
+        contents = source.read()
+    physical_lines = re.split(r"\r\n|\r|\n", contents)
+
+    with io.StringIO(contents, newline="") as fh:
+        reader = csv.reader(fh, strict=True)
         header = next(reader, None)
         if header is None:
             # Empty file: nothing to compare against, and append_log will lay
@@ -354,16 +359,36 @@ def check_log_compatible(path: Path, id_scheme: str) -> None:
 
         records = []
         previous_end = 1
-        dict_reader = csv.DictReader(fh, fieldnames=header)
-        for row in dict_reader:
-            line_number = previous_end + 1
-            physical_end = 1 + dict_reader.line_num
-            records.append((line_number, physical_end, row))
-            previous_end = physical_end
+        dict_reader = csv.DictReader(fh, fieldnames=header, strict=True)
+        try:
+            for row in dict_reader:
+                physical_end = 1 + dict_reader.line_num
+                line_number = next(
+                    (
+                        number
+                        for number in range(previous_end + 1, physical_end + 1)
+                        if physical_lines[number - 1].strip()
+                    ),
+                    previous_end + 1,
+                )
+                records.append((line_number, physical_end, row))
+                previous_end = physical_end
+        except csv.Error as exc:
+            line_number = next(
+                (
+                    number
+                    for number in range(previous_end + 1, len(physical_lines) + 1)
+                    if physical_lines[number - 1].strip()
+                ),
+                previous_end + 1,
+            )
+            raise ValidationError(
+                f"{path} row {line_number} has invalid CSV: {exc}"
+            ) from exc
 
         expected_records = sum(
             bool(line.strip())
-            for line in path.read_text(encoding="utf-8").splitlines()
+            for line in physical_lines
         ) - 1
         if len(records) != expected_records:
             line_number = next(
