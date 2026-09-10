@@ -139,6 +139,14 @@ The numbering has gaps where documents were never needed.
 
 ## Known limitations
 
+- Identity change: a scanner fingerprint that cannot carry identity — an empty
+  value, a non-string, or a message such as Semgrep's `requires login` when it
+  runs without an account — is now rejected, and identity falls back to file
+  content. Findings recorded before this change under such a fingerprint had
+  every location for one rule in one file collapsed into a single id, so their
+  ids move. `ID_SCHEME` is deliberately not bumped, because the log's scheme
+  guard cannot tell the two apart; if you recorded verdicts against a scanner
+  that emitted placeholder fingerprints, archive `findings/` and retriage.
 - Breaking audit-log change: `recorded_at` now follows `reviewed_at` in the
   CSV header. Writer-stamped UTC recording time controls revision ordering,
   decision supersession and `--since`; the model's `reviewed_at` is retained

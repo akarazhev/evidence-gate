@@ -403,6 +403,45 @@ class TestFindingIdentity(unittest.TestCase):
         )
         self.assertIn("primaryLocationLineHash", fp)
 
+    def test_unusable_fingerprint_does_not_collapse_distinct_locations(self):
+        """Semgrep without an account stamps every result with the literal
+        string 'requires login' instead of a fingerprint. Trusting it gives
+        every finding for one rule in one file the same identity, so triaging
+        one marks the rest reviewed and they leave the queue unexamined."""
+        text = "a = 1\nexec(cmd)\nb = 2\nexec(other)\n"
+        placeholder = {"matchBasedId/v1": "requires login"}
+        with temp_tree({"app/handler.py": text}) as repo:
+            first = build_packet.compute_finding_id(
+                result_at(start=2, end=2, fingerprints=placeholder),
+                repo,
+                fixture_exclusions(),
+            )
+            second = build_packet.compute_finding_id(
+                result_at(start=4, end=4, fingerprints=placeholder),
+                repo,
+                fixture_exclusions(),
+            )
+        self.assertNotEqual(first, second)
+
+    def test_empty_fingerprint_is_not_an_identity(self):
+        self.assertIsNone(
+            build_packet.scanner_fingerprint({"fingerprints": {"matchBasedId/v1": ""}})
+        )
+
+    def test_non_string_fingerprint_is_not_an_identity(self):
+        self.assertIsNone(
+            build_packet.scanner_fingerprint({"partialFingerprints": {"lineHash": None}})
+        )
+
+    def test_a_usable_container_is_used_when_the_preferred_one_is_unusable(self):
+        fingerprint = build_packet.scanner_fingerprint(
+            {
+                "fingerprints": {"matchBasedId/v1": "requires login"},
+                "partialFingerprints": {"primaryLocationLineHash": "abc123"},
+            }
+        )
+        self.assertEqual(fingerprint, "partialFingerprints:primaryLocationLineHash:abc123")
+
     def test_excluded_path_refuses_before_reading(self):
         with temp_tree({}) as repo:
             with self.assertRaises(check_scope.ScopeViolation):

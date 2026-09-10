@@ -58,6 +58,21 @@ def _digest(material: str) -> str:
     return f"F-{hashlib.sha256(material.encode()).hexdigest()[:12]}"
 
 
+def usable_fingerprint(value: object) -> bool:
+    """Whether a SARIF fingerprint value can carry identity.
+
+    Semgrep without an account stamps every result with the literal string
+    "requires login" in place of a fingerprint. Taken at face value it gives
+    every finding for one rule in one file the same id, and since the queue
+    hides reviewed findings by id, triaging one drops the rest unexamined.
+
+    Whitespace is the tell: a fingerprint is a hash or a token, a placeholder
+    is a sentence. Rejecting on shape rather than on the exact string keeps the
+    guard working for the next scanner that reports a message here.
+    """
+    return isinstance(value, str) and bool(value) and not any(c.isspace() for c in value)
+
+
 def scanner_fingerprint(result: dict) -> str | None:
     """The scanner's own stable identifier for this finding, when it emits one.
 
@@ -66,16 +81,23 @@ def scanner_fingerprint(result: dict) -> str | None:
     identity rather than inventing a competing one. Key selection is
     deterministic: a preferred key if present, otherwise the first in sorted
     order, so two runs over the same result always agree.
+
+    Values that cannot carry identity are skipped, and a container holding
+    nothing usable falls through to the next one. When no container yields a
+    usable value the caller derives identity from file content instead.
     """
     for container in ("fingerprints", "partialFingerprints"):
         prints = result.get(container)
         if not isinstance(prints, dict) or not prints:
             continue
+        usable = {key: value for key, value in prints.items() if usable_fingerprint(value)}
+        if not usable:
+            continue
         for key in FINGERPRINT_PREFERENCE:
-            if key in prints:
-                return f"{container}:{key}:{prints[key]}"
-        key = sorted(prints)[0]
-        return f"{container}:{key}:{prints[key]}"
+            if key in usable:
+                return f"{container}:{key}:{usable[key]}"
+        key = sorted(usable)[0]
+        return f"{container}:{key}:{usable[key]}"
     return None
 
 
