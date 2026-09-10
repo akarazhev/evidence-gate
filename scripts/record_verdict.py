@@ -330,8 +330,13 @@ def append_log(row: dict, path: Path = LOG_PATH) -> None:
     # data row in the header position, where csv.DictReader would read it as
     # the column names and corrupt every row that follows.
     has_header = path.exists() and path.stat().st_size > 0
+    # LF, not the csv module's default CRLF. docs/03-data-handling.md commits
+    # this file, so git normalises it on the way in; a checkout then returns LF
+    # while the recorder keeps appending CRLF, and the audit trail ends up with
+    # mixed endings that diff against themselves. The readers accept any of the
+    # three, so writing LF costs nothing and keeps the committed file stable.
     with path.open("a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
+        writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS, lineterminator="\n")
         if not has_header:
             writer.writeheader()
         writer.writerow(cells)

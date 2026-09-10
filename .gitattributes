@@ -1,0 +1,5 @@
+# The triage log is the committed audit trail (docs/03-data-handling.md).
+# Pin it to LF so a checkout and a fresh append agree, whatever the
+# contributor's core.autocrlf is set to. record_verdict.append_log writes LF
+# for the same reason; this keeps the guarantee if that ever regresses.
+findings/triage-log.csv text eol=lf

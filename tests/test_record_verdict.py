@@ -1133,6 +1133,21 @@ class TestLogCompatibility(unittest.TestCase):
                 first_line = next(csv.reader(fh))
         self.assertEqual(first_line, record_verdict.LOG_FIELDS)
 
+    def test_log_lines_end_with_lf_so_git_never_renormalises_the_audit_trail(self):
+        """csv defaults to CRLF, but docs/03-data-handling.md commits this file.
+
+        Git normalises it to LF on the way in, so a checkout hands back LF while
+        the recorder keeps appending CRLF. The audit trail then carries mixed
+        endings and diffs it against itself.
+        """
+        with temp_tree({}) as root:
+            log = root / "triage-log.csv"
+            record_verdict.append_log({"finding_id": "F-1"}, log)
+            record_verdict.append_log({"finding_id": "F-2"}, log)
+            raw = log.read_bytes()
+        self.assertNotIn(b"\r", raw)
+        self.assertEqual(raw.count(b"\n"), 3)
+
 
 class TestVerdictRows(unittest.TestCase):
     def test_verdict_rows_are_found(self):
